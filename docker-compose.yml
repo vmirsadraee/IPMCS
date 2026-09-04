@@ -1,0 +1,19 @@
+services:
+  db:
+    image: postgres:16
+    container_name: ipmcs-db
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_DB: ipmcs
+      POSTGRES_USER: ipmcs
+      POSTGRES_PASSWORD: ipmcs_dev_password
+
+    ports:
+      - "5432:5432"
+
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
