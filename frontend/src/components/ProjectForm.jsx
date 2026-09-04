@@ -1,7 +1,12 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useLanguage } from "../context/LanguageContext";
 
-function ProjectForm({ onProjectCreated, onCancel }) {
+function ProjectForm({
+  project,
+  onProjectCreated,
+  onProjectUpdated,
+  onCancel,
+}) {
   const { t } = useLanguage();
 
   const [formData, setFormData] = useState({
@@ -13,6 +18,26 @@ function ProjectForm({ onProjectCreated, onCancel }) {
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (project) {
+      setFormData({
+        code: project.code || "",
+        name: project.name || "",
+        description: project.description || "",
+        status: project.status || "planning",
+      });
+    } else {
+      setFormData({
+        code: "",
+        name: "",
+        description: "",
+        status: "planning",
+      });
+    }
+
+    setError("");
+  }, [project]);
 
   const handleChange = (event) => {
     const { name, value } = event.target;
@@ -30,34 +55,44 @@ function ProjectForm({ onProjectCreated, onCancel }) {
     setError("");
 
     try {
-      const response = await fetch(
-        "http://127.0.0.1:8000/api/projects",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(formData),
-        }
-      );
+      const url = project
+        ? `http://127.0.0.1:8000/api/projects/${project.id}`
+        : "http://127.0.0.1:8000/api/projects";
+
+      const method = project ? "PUT" : "POST";
+
+      const response = await fetch(url, {
+        method,
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(formData),
+      });
 
       if (!response.ok) {
-        throw new Error("Failed to create project");
+        throw new Error(
+          project
+            ? "Failed to update project"
+            : "Failed to create project"
+        );
       }
 
-      const newProject = await response.json();
+      const savedProject = await response.json();
 
-      onProjectCreated(newProject);
+      if (project) {
+        onProjectUpdated(savedProject);
+      } else {
+        onProjectCreated(savedProject);
+      }
 
-      setFormData({
-        code: "",
-        name: "",
-        description: "",
-        status: "planning",
-      });
     } catch (error) {
       console.error(error);
-      setError("createProjectError");
+
+      setError(
+        project
+          ? "updateProjectError"
+          : "createProjectError"
+      );
     } finally {
       setSaving(false);
     }
@@ -68,8 +103,17 @@ function ProjectForm({ onProjectCreated, onCancel }) {
 
       <div className="project-form-header">
         <div>
-          <h2>{t("newProject")}</h2>
-          <p>{t("newProjectDescription")}</p>
+          <h2>
+            {project
+              ? t("editProject")
+              : t("newProject")}
+          </h2>
+
+          <p>
+            {project
+              ? t("editProjectDescription")
+              : t("newProjectDescription")}
+          </p>
         </div>
       </div>
 
@@ -179,7 +223,9 @@ function ProjectForm({ onProjectCreated, onCancel }) {
           >
             {saving
               ? t("saving")
-              : t("saveProject")}
+              : project
+                ? t("updateProject")
+                : t("saveProject")}
           </button>
 
         </div>
