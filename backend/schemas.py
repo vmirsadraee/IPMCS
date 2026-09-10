@@ -284,3 +284,33 @@ class TaskProgressHistoryResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+# =========================================
+# WBS Tree
+# =========================================
+
+class WBSTaskResponse(BaseModel):
+    id: int
+    project_id: int
+    parent_task_id: int | None = None
+
+    code: str
+    name: str
+
+    status: str
+    priority: str
+    progress_type: str
+
+    progress: float
+    weight: float
+
+    include_in_progress: bool
+
+    children: list["WBSTaskResponse"] = []
+
+
+class ProjectWBSResponse(BaseModel):
+    project_id: int
+    project_name: str
+
+    tasks: list[WBSTaskResponse]

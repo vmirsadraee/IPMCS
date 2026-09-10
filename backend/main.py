@@ -30,6 +30,8 @@ from schemas import (
     ProjectProgressChildResponse,
     ProjectProgressResponse,
     WeightValidationResponse,
+    WBSTaskResponse,
+    ProjectWBSResponse,
 )
 
 
@@ -623,7 +625,7 @@ def update_task(
             if (
                 parent_task is not None
                 and parent_task.progress_type == "weighted"
-            ):
+                ):
 
                 if round(
                     proposed_total_weight,
@@ -1078,6 +1080,95 @@ def get_project_progress(
         "children": children_result,
     }
 
+
+# =========================================
+# Project WBS Tree
+# =========================================
+
+@app.get(
+    "/api/projects/{project_id}/wbs",
+    response_model=ProjectWBSResponse
+)
+def get_project_wbs(
+    project_id: int,
+    db: Session = Depends(get_db)
+):
+    # -----------------------------------------
+    # Find project
+    # -----------------------------------------
+
+    project = (
+        db.query(Project)
+        .filter(Project.id == project_id)
+        .first()
+    )
+
+    if project is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Project not found"
+        )
+
+    # -----------------------------------------
+    # Recursive tree builder
+    # -----------------------------------------
+
+    def build_task_tree(task: Task):
+        children = (
+            db.query(Task)
+            .filter(
+                Task.project_id == project_id,
+                Task.parent_task_id == task.id
+            )
+            .order_by(Task.id)
+            .all()
+        )
+
+        task_progress = calculate_task_progress(
+            task,
+            db
+        )
+
+        return WBSTaskResponse(
+            id=task.id,
+            project_id=task.project_id,
+            parent_task_id=task.parent_task_id,
+            code=task.code,
+            name=task.name,
+            status=task.status,
+            priority=task.priority,
+            progress_type=task.progress_type,
+            progress=round(task_progress, 2),
+            weight=round(float(task.weight), 3),
+            include_in_progress=task.include_in_progress,
+            children=[
+                build_task_tree(child)
+                for child in children
+            ],
+        )
+
+    # -----------------------------------------
+    # Get top-level tasks
+    # -----------------------------------------
+
+    root_tasks = (
+        db.query(Task)
+        .filter(
+            Task.project_id == project_id,
+            Task.parent_task_id.is_(None)
+        )
+        .order_by(Task.id)
+        .all()
+    )
+
+    return ProjectWBSResponse(
+        project_id=project.id,
+        project_name=project.name,
+        tasks=[
+            build_task_tree(task)
+            for task in root_tasks
+        ],
+    )
 
 # =========================================
 # Task Quantities

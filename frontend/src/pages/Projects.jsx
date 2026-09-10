@@ -1,15 +1,20 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useLanguage } from "../context/LanguageContext";
 import ProjectForm from "../components/ProjectForm";
 
 function Projects() {
   const { t } = useLanguage();
+  const navigate = useNavigate();
 
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [showForm, setShowForm] = useState(false);
   const [editingProject, setEditingProject] = useState(null);
+
+  const [searchTerm, setSearchTerm] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
 
   const loadProjects = () => {
     setLoading(true);
@@ -36,6 +41,21 @@ function Projects() {
   useEffect(() => {
     loadProjects();
   }, []);
+
+  const filteredProjects = projects.filter((project) => {
+    const search = searchTerm.toLowerCase().trim();
+
+    const matchesSearch =
+      project.code?.toLowerCase().includes(search) ||
+      project.name?.toLowerCase().includes(search) ||
+      project.description?.toLowerCase().includes(search);
+
+    const matchesStatus =
+      statusFilter === "all" ||
+      project.status === statusFilter;
+
+    return matchesSearch && matchesStatus;
+  });
 
   const handleProjectCreated = (newProject) => {
     setProjects((previous) => [
@@ -67,7 +87,7 @@ function Projects() {
 
   const handleDelete = async (project) => {
     const confirmed = window.confirm(
-      `${t("confirmDelete")} "${project.name}"?`
+      t("confirmDelete") + ' "' + project.name + '"?'
     );
 
     if (!confirmed) {
@@ -76,7 +96,7 @@ function Projects() {
 
     try {
       const response = await fetch(
-        `http://127.0.0.1:8000/api/projects/${project.id}`,
+        "http://127.0.0.1:8000/api/projects/" + project.id,
         {
           method: "DELETE",
         }
@@ -136,8 +156,51 @@ function Projects() {
               <h2>{t("projectList")}</h2>
 
               <span>
-                {projects.length} {t("projectsCount")}
+                {filteredProjects.length}{" "}
+                {t("projectsCount")}
               </span>
+
+            </div>
+
+            <div className="projects-toolbar">
+
+              <input
+                type="text"
+                className="search-input"
+                value={searchTerm}
+                onChange={(event) =>
+                  setSearchTerm(event.target.value)
+                }
+                placeholder={t("searchProjects")}
+              />
+
+              <select
+                className="status-filter"
+                value={statusFilter}
+                onChange={(event) =>
+                  setStatusFilter(event.target.value)
+                }
+              >
+                <option value="all">
+                  {t("allStatuses")}
+                </option>
+
+                <option value="planning">
+                  {t("planning")}
+                </option>
+
+                <option value="active">
+                  {t("active")}
+                </option>
+
+                <option value="on_hold">
+                  {t("onHold")}
+                </option>
+
+                <option value="completed">
+                  {t("completed")}
+                </option>
+              </select>
 
             </div>
 
@@ -163,7 +226,16 @@ function Projects() {
 
             {!loading &&
               !error &&
-              projects.length > 0 && (
+              projects.length > 0 &&
+              filteredProjects.length === 0 && (
+                <p className="projects-message">
+                  {t("noMatchingProjects")}
+                </p>
+              )}
+
+            {!loading &&
+              !error &&
+              filteredProjects.length > 0 && (
                 <div className="projects-table-wrapper">
 
                   <table className="projects-table">
@@ -181,7 +253,7 @@ function Projects() {
 
                     <tbody>
 
-                      {projects.map((project) => (
+                      {filteredProjects.map((project) => (
                         <tr key={project.id}>
 
                           <td>{project.id}</td>
@@ -195,13 +267,26 @@ function Projects() {
                           </td>
 
                           <td>
-                            <span className="status-badge">
+                            <span
+                              className={`status-badge status-${project.status}`}
+                            >
                               {t(project.status)}
                             </span>
                           </td>
 
                           <td>
                             <div className="project-actions">
+
+                              <button
+                                className="details-button"
+                                onClick={() =>
+                                  navigate(
+                                    `/projects/${project.id}`
+                                  )
+                                }
+                              >
+                                {t("viewDetails")}
+                              </button>
 
                               <button
                                 className="edit-button"
