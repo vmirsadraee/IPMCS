@@ -1,7 +1,8 @@
-
 from fastapi import FastAPI, Depends, HTTPException
+from sqlalchemy.exc import IntegrityError
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
 from database import Base, engine, SessionLocal
 
@@ -32,6 +33,7 @@ from schemas import (
     WeightValidationResponse,
     WBSTaskResponse,
     ProjectWBSResponse,
+    ProjectSetupCreate,
 )
 
 
@@ -136,7 +138,6 @@ def calculate_task_progress(
         if not children:
             return 0
 
-        # Total active child weight
         total_weight = sum(
             float(child.weight)
             for child in children
@@ -156,7 +157,6 @@ def calculate_task_progress(
 
         for child in children:
 
-            # Recursive calculation
             child_progress = calculate_task_progress(
                 child,
                 db
@@ -268,7 +268,10 @@ def dashboard_summary(
     }
 
 
+# =========================================
 # Create a new project
+# =========================================
+
 @app.post(
     "/api/projects",
     response_model=ProjectResponse
@@ -277,21 +280,336 @@ def create_project(
     project: ProjectCreate,
     db: Session = Depends(get_db)
 ):
+    # -----------------------------------------
+    # Normalize project code
+    # -----------------------------------------
+
+    project_code = project.code.strip()
+
+    if not project_code:
+        raise HTTPException(
+            status_code=400,
+            detail="Project code cannot be empty"
+        )
+
+    # -----------------------------------------
+    # Check duplicate project code
+    # -----------------------------------------
+
+    existing_project = (
+        db.query(Project)
+        .filter(Project.code == project_code)
+        .first()
+    )
+
+    if existing_project is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Project code '{project_code}' "
+                "already exists."
+            )
+        )
+
+    # -----------------------------------------
+    # Create project
+    # -----------------------------------------
+
     new_project = Project(
-        code=project.code,
-        name=project.name,
+        code=project_code,
+        name=project.name.strip(),
         description=project.description,
         status=project.status,
     )
 
     db.add(new_project)
-    db.commit()
+
+    try:
+        db.commit()
+
+    except IntegrityError:
+        db.rollback()
+
+        # Handle a possible race condition where
+        # another request created the same code
+        # between the duplicate check and commit.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Project code '{project_code}' "
+                "already exists."
+            )
+        )
+
     db.refresh(new_project)
 
     return new_project
 
+# =========================================
+# Create Project + Main WBS Atomically
+# =========================================
 
+@app.post(
+    "/api/projects/setup",
+    response_model=ProjectResponse
+)
+def create_project_setup(
+    setup: ProjectSetupCreate,
+    db: Session = Depends(get_db)
+):
+    """
+    Create the project and its initial top-level WBS
+    operations as one atomic database operation.
+
+    Either everything is created successfully,
+    or everything is rolled back.
+    """
+
+    # -----------------------------------------
+    # Normalize project code
+    # -----------------------------------------
+
+    project_code = setup.project.code.strip()
+
+    if not project_code:
+        raise HTTPException(
+            status_code=400,
+            detail="Project code cannot be empty"
+        )
+
+    # -----------------------------------------
+    # Normalize project name
+    # -----------------------------------------
+
+    project_name = setup.project.name.strip()
+
+    if not project_name:
+        raise HTTPException(
+            status_code=400,
+            detail="Project name cannot be empty"
+        )
+
+    # -----------------------------------------
+    # Check duplicate project code
+    # -----------------------------------------
+
+    existing_project = (
+        db.query(Project)
+        .filter(Project.code == project_code)
+        .first()
+    )
+
+    if existing_project is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Project code '{project_code}' "
+                "already exists."
+            )
+        )
+
+    # -----------------------------------------
+    # Validate main operations
+    # -----------------------------------------
+
+    if not setup.main_operations:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "At least one main project operation "
+                "is required."
+            )
+        )
+
+    # -----------------------------------------
+    # Validate operation codes and names
+    # -----------------------------------------
+
+    operation_codes = set()
+
+    for operation in setup.main_operations:
+
+        operation_code = operation.code.strip()
+        operation_name = operation.name.strip()
+
+        if not operation_code:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Every main project operation "
+                    "must have a code."
+                )
+            )
+
+        if not operation_name:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Every main project operation "
+                    "must have a name."
+                )
+            )
+
+        if operation_code in operation_codes:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Duplicate main operation code "
+                    f"'{operation_code}'."
+                )
+            )
+
+        operation_codes.add(operation_code)
+
+    # -----------------------------------------
+    # Validate total weight
+    # -----------------------------------------
+
+    total_weight = sum(
+        float(operation.weight)
+        for operation in setup.main_operations
+    )
+
+    if round(total_weight, 3) != 100:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Top-level task weights must total 100. "
+                f"Current total: {total_weight}"
+            )
+        )
+
+    # -----------------------------------------
+    # Database transaction
+    # -----------------------------------------
+
+    try:
+
+        # -------------------------------------
+        # Create project
+        # -------------------------------------
+
+        new_project = Project(
+            code=project_code,
+            name=project_name,
+            description=(
+                setup.project.description
+            ),
+            status="planning",
+        )
+
+        db.add(new_project)
+
+        # -------------------------------------
+        # Flush
+        #
+        # This gives us new_project.id
+        # without committing the transaction.
+        # -------------------------------------
+
+        db.flush()
+
+        # -------------------------------------
+        # Create top-level WBS operations
+        # -------------------------------------
+
+        for operation in setup.main_operations:
+
+            new_task = Task(
+                project_id=new_project.id,
+
+                # Top-level WBS
+                parent_task_id=None,
+
+                code=operation.code.strip(),
+                name=operation.name.strip(),
+                description=operation.description,
+
+                status=operation.status,
+                priority=operation.priority,
+
+                progress_type=operation.progress_type,
+                include_in_progress=(
+                    operation.include_in_progress
+                ),
+
+                planned_start=operation.planned_start,
+                planned_finish=operation.planned_finish,
+
+                actual_start=operation.actual_start,
+                actual_finish=operation.actual_finish,
+
+                progress=operation.progress,
+                weight=operation.weight,
+
+                notes=operation.notes,
+            )
+
+            db.add(new_task)
+
+        # -------------------------------------
+        # Final database commit
+        # -------------------------------------
+
+        db.commit()
+
+        # -------------------------------------
+        # Refresh project
+        # -------------------------------------
+
+        db.refresh(new_project)
+
+        return new_project
+
+    except IntegrityError as exc:
+
+        db.rollback()
+
+        error_text = str(exc).lower()
+
+        if "code" in error_text:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Project or task code conflict "
+                    f"for project '{project_code}'."
+                )
+            )
+
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Project setup could not be completed "
+                "because of a database constraint."
+            )
+        )
+
+    except Exception:
+
+        # -------------------------------------
+        # IMPORTANT
+        #
+        # Any failure in ANY stage rolls back:
+        #
+        # Project
+        # + all WBS tasks
+        #
+        # together.
+        # -------------------------------------
+
+        db.rollback()
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Project setup failed. "
+                "No incomplete project data was saved."
+            )
+        )
+# =========================================
 # Update an existing project
+# =========================================
+
 @app.put(
     "/api/projects/{project_id}",
     response_model=ProjectResponse
@@ -301,6 +619,10 @@ def update_project(
     project: ProjectCreate,
     db: Session = Depends(get_db)
 ):
+    # -----------------------------------------
+    # Find project
+    # -----------------------------------------
+
     existing_project = (
         db.query(Project)
         .filter(Project.id == project_id)
@@ -313,18 +635,77 @@ def update_project(
             detail="Project not found"
         )
 
-    existing_project.code = project.code
-    existing_project.name = project.name
+    # -----------------------------------------
+    # Normalize project code
+    # -----------------------------------------
+
+    project_code = project.code.strip()
+
+    if not project_code:
+        raise HTTPException(
+            status_code=400,
+            detail="Project code cannot be empty"
+        )
+
+    # -----------------------------------------
+    # Check duplicate code
+    #
+    # Exclude the current project itself.
+    # -----------------------------------------
+
+    duplicate_project = (
+        db.query(Project)
+        .filter(
+            Project.code == project_code,
+            Project.id != project_id
+        )
+        .first()
+    )
+
+    if duplicate_project is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Project code '{project_code}' "
+                "already exists."
+            )
+        )
+
+    # -----------------------------------------
+    # Update project
+    # -----------------------------------------
+
+    existing_project.code = project_code
+    existing_project.name = project.name.strip()
     existing_project.description = project.description
     existing_project.status = project.status
 
-    db.commit()
+    try:
+        db.commit()
+
+    except IntegrityError:
+        db.rollback()
+
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Project code '{project_code}' "
+                "already exists."
+            )
+        )
+
     db.refresh(existing_project)
 
     return existing_project
 
 
+# =========================================
 # Delete a project
+# =========================================
+# =========================================
+# Delete a project
+# =========================================
+
 @app.delete("/api/projects/{project_id}")
 def delete_project(
     project_id: int,
@@ -342,15 +723,37 @@ def delete_project(
             detail="Project not found"
         )
 
-    db.delete(existing_project)
-    db.commit()
+    try:
+        # -----------------------------------------
+        # Delete all tasks belonging to the project
+        # -----------------------------------------
+
+        db.query(Task).filter(
+            Task.project_id == project_id
+        ).delete(
+            synchronize_session=False
+        )
+
+        # -----------------------------------------
+        # Delete the project
+        # -----------------------------------------
+
+        db.delete(existing_project)
+
+        db.commit()
+
+    except Exception:
+        db.rollback()
+
+        raise HTTPException(
+            status_code=500,
+            detail="Project could not be deleted."
+        )
 
     return {
         "message": "Project deleted successfully",
         "id": project_id
     }
-
-
 # =========================================
 # Tasks
 # =========================================
@@ -370,7 +773,10 @@ def get_tasks(
     )
 
 
+# =========================================
 # Create a new task
+# =========================================
+
 @app.post(
     "/api/tasks",
     response_model=TaskResponse
@@ -379,7 +785,10 @@ def create_task(
     task: TaskCreate,
     db: Session = Depends(get_db)
 ):
+    # -----------------------------------------
     # Check project
+    # -----------------------------------------
+
     project = (
         db.query(Project)
         .filter(Project.id == task.project_id)
@@ -392,7 +801,10 @@ def create_task(
             detail="Project not found"
         )
 
+    # -----------------------------------------
     # Check parent task
+    # -----------------------------------------
+
     if task.parent_task_id is not None:
 
         parent_task = (
@@ -414,10 +826,9 @@ def create_task(
                 detail="Parent task belongs to another project"
             )
 
-        # A weighted parent must eventually have
-        # valid child weights.
-        # During creation, total may be temporarily
-        # less than 100.
+    # -----------------------------------------
+    # Create task
+    # -----------------------------------------
 
     new_task = Task(
         project_id=task.project_id,
@@ -492,7 +903,6 @@ def update_task(
 
     if task.parent_task_id is not None:
 
-        # Task cannot be its own parent
         if task.parent_task_id == task_id:
             raise HTTPException(
                 status_code=400,
@@ -511,7 +921,6 @@ def update_task(
                 detail="Parent task not found"
             )
 
-        # Parent must belong to same project
         if parent_task.project_id != existing_task.project_id:
             raise HTTPException(
                 status_code=400,
@@ -620,12 +1029,10 @@ def update_task(
                 .first()
             )
 
-            # Only enforce total=100 when the parent
-            # itself is weighted.
             if (
                 parent_task is not None
                 and parent_task.progress_type == "weighted"
-                ):
+            ):
 
                 if round(
                     proposed_total_weight,
@@ -755,7 +1162,6 @@ def get_task_progress_history(
     task_id: int,
     db: Session = Depends(get_db)
 ):
-    # Check task exists
     task = (
         db.query(Task)
         .filter(Task.id == task_id)
@@ -794,7 +1200,6 @@ def get_weighted_task_progress(
     task_id: int,
     db: Session = Depends(get_db)
 ):
-    # Find parent task
     task = (
         db.query(Task)
         .filter(Task.id == task_id)
@@ -807,7 +1212,6 @@ def get_weighted_task_progress(
             detail="Task not found"
         )
 
-    # Get active direct children
     children = (
         db.query(Task)
         .filter(
@@ -828,7 +1232,6 @@ def get_weighted_task_progress(
             "children": [],
         }
 
-    # Calculate total active weight
     total_weight = sum(
         float(child.weight)
         for child in children
@@ -850,7 +1253,6 @@ def get_weighted_task_progress(
 
     for child in children:
 
-        # Recursive progress
         child_progress = calculate_task_progress(
             child,
             db
@@ -913,7 +1315,6 @@ def validate_task_weights(
     task_id: int,
     db: Session = Depends(get_db)
 ):
-    # Find task
     task = (
         db.query(Task)
         .filter(Task.id == task_id)
@@ -926,7 +1327,6 @@ def validate_task_weights(
             detail="Task not found"
         )
 
-    # Get active direct children
     children = (
         db.query(Task)
         .filter(
@@ -977,7 +1377,6 @@ def get_project_progress(
     project_id: int,
     db: Session = Depends(get_db)
 ):
-    # Find project
     project = (
         db.query(Project)
         .filter(Project.id == project_id)
@@ -990,7 +1389,6 @@ def get_project_progress(
             detail="Project not found"
         )
 
-    # Get active top-level tasks
     tasks = (
         db.query(Task)
         .filter(
@@ -1011,7 +1409,6 @@ def get_project_progress(
             "children": [],
         }
 
-    # Calculate total weight
     total_weight = sum(
         float(task.weight)
         for task in tasks
@@ -1093,10 +1490,6 @@ def get_project_wbs(
     project_id: int,
     db: Session = Depends(get_db)
 ):
-    # -----------------------------------------
-    # Find project
-    # -----------------------------------------
-
     project = (
         db.query(Project)
         .filter(Project.id == project_id)
@@ -1109,11 +1502,8 @@ def get_project_wbs(
             detail="Project not found"
         )
 
-    # -----------------------------------------
-    # Recursive tree builder
-    # -----------------------------------------
-
     def build_task_tree(task: Task):
+
         children = (
             db.query(Task)
             .filter(
@@ -1147,10 +1537,6 @@ def get_project_wbs(
             ],
         )
 
-    # -----------------------------------------
-    # Get top-level tasks
-    # -----------------------------------------
-
     root_tasks = (
         db.query(Task)
         .filter(
@@ -1169,6 +1555,7 @@ def get_project_wbs(
             for task in root_tasks
         ],
     )
+
 
 # =========================================
 # Task Quantities
@@ -1198,7 +1585,6 @@ def create_task_quantity(
     quantity: TaskQuantityCreate,
     db: Session = Depends(get_db)
 ):
-    # Check task exists
     task = (
         db.query(Task)
         .filter(Task.id == quantity.task_id)
@@ -1236,7 +1622,6 @@ def update_task_quantity(
     quantity: TaskQuantityUpdate,
     db: Session = Depends(get_db)
 ):
-    # Find quantity
     existing_quantity = (
         db.query(TaskQuantity)
         .filter(TaskQuantity.id == quantity_id)
@@ -1249,12 +1634,10 @@ def update_task_quantity(
             detail="Task quantity not found"
         )
 
-    # Keep old actual quantity
     old_actual_quantity = float(
         existing_quantity.actual_quantity
     )
 
-    # Update provided fields
     if quantity.unit is not None:
         existing_quantity.unit = quantity.unit
 
@@ -1268,7 +1651,6 @@ def update_task_quantity(
             quantity.planned_quantity
         )
 
-    # Update actual quantity + history
     if quantity.actual_quantity is not None:
 
         new_actual_quantity = float(
@@ -1340,7 +1722,6 @@ def get_task_progress(
     task_id: int,
     db: Session = Depends(get_db)
 ):
-    # Find task
     task = (
         db.query(Task)
         .filter(Task.id == task_id)
@@ -1353,7 +1734,6 @@ def get_task_progress(
             detail="Task not found"
         )
 
-    # Calculate progress centrally
     progress = calculate_task_progress(
         task,
         db
@@ -1435,7 +1815,6 @@ def get_task_progress(
             "quantity_variance": None,
         }
 
-    # This point should never normally be reached
     raise HTTPException(
         status_code=400,
         detail=(

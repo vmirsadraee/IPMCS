@@ -1,0 +1,888 @@
+/* =========================================================
+   Project Details
+   WBS / Project Control Center
+   ========================================================= */
+
+
+/* =========================================================
+   WBS CARD
+   ========================================================= */
+
+.project-details-page .wbs-card {
+  width: 100%;
+  overflow: hidden;
+}
+
+.project-details-page .wbs-tree {
+  width: 100%;
+}
+
+
+/* =========================================================
+   WBS HEADER
+   ========================================================= */
+
+.project-details-page .wbs-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 22px 22px 18px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.project-details-page .wbs-summary {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: #64748b;
+}
+
+.project-details-page .wbs-summary span {
+  white-space: nowrap;
+}
+
+
+/* =========================================================
+   WBS TABLE HEADER
+   ========================================================= */
+
+.project-details-page .wbs-table-header {
+  display: grid;
+  grid-template-columns:
+    minmax(320px, 1fr)
+    minmax(180px, 1fr)
+    90px
+    150px
+    54px;
+
+  align-items: center;
+  gap: 14px;
+
+  padding: 11px 16px;
+
+  background: #f8fafc;
+  border-bottom: 1px solid #e5e7eb;
+
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+
+/* =========================================================
+   WBS TASK NODE
+   ========================================================= */
+
+.project-details-page .wbs-task-node {
+  position: relative;
+  width: 100%;
+}
+
+
+/* =========================================================
+   WBS ROW — COMMON
+   ========================================================= */
+
+.project-details-page .wbs-task-row {
+  position: relative;
+
+  display: grid;
+
+  grid-template-columns:
+    minmax(320px, 1fr)
+    minmax(180px, 1fr)
+    90px
+    150px
+    54px;
+
+  align-items: center;
+
+  gap: 14px;
+
+  min-height: 74px;
+
+  padding: 10px 16px;
+
+  border-bottom: 1px solid #e5e7eb;
+
+  cursor: pointer;
+
+  transition:
+    background-color 0.18s ease,
+    border-color 0.18s ease,
+    box-shadow 0.18s ease;
+}
+
+
+/* =========================================================
+   TOP LEVEL
+   All main WBS groups have the same visual identity.
+   ========================================================= */
+
+.project-details-page .wbs-task-row.wbs-level-0 {
+  background: #eef4fb;
+
+  border-top: 1px solid #d9e4f1;
+  border-bottom: 1px solid #d9e4f1;
+}
+
+.project-details-page .wbs-task-row.wbs-level-0:hover {
+  background: #e5eef9;
+}
+
+
+/* =========================================================
+   LEVEL 1
+   ========================================================= */
+
+.project-details-page .wbs-task-row.wbs-level-1 {
+  background: #ffffff;
+}
+
+.project-details-page .wbs-task-row.wbs-level-1:hover {
+  background: #f8fafc;
+}
+
+
+/* =========================================================
+   LEVEL 2
+   ========================================================= */
+
+.project-details-page .wbs-task-row.wbs-level-2 {
+  background: #f8fafc;
+}
+
+.project-details-page .wbs-task-row.wbs-level-2:hover {
+  background: #f1f5f9;
+}
+
+
+/* =========================================================
+   LEVEL 3
+   ========================================================= */
+
+.project-details-page .wbs-task-row.wbs-level-3 {
+  background: #f5f7fa;
+}
+
+.project-details-page .wbs-task-row.wbs-level-3:hover {
+  background: #edf1f5;
+}
+
+
+/* =========================================================
+   LEVEL 4+
+   ========================================================= */
+
+.project-details-page .wbs-task-row.wbs-level-4 {
+  background: #f1f4f7;
+}
+
+.project-details-page .wbs-task-row.wbs-level-4:hover {
+  background: #e9eef2;
+}
+
+
+/* =========================================================
+   SELECTED TASK
+   ========================================================= */
+
+.project-details-page
+  .wbs-task-row.wbs-task-row-selected {
+  box-shadow:
+    inset 3px 0 0 #2563eb;
+
+  background: #eff6ff;
+}
+
+.project-details-page
+  .wbs-task-row.wbs-level-0.wbs-task-row-selected {
+  background: #e4eefb;
+}
+
+
+/* =========================================================
+   EXCLUDED TASK
+   ========================================================= */
+
+.project-details-page
+  .wbs-task-row.wbs-task-row-excluded {
+  opacity: 0.72;
+}
+
+
+/* =========================================================
+   TASK MAIN COLUMN
+   ========================================================= */
+
+.project-details-page .wbs-task-main {
+  position: relative;
+
+  display: flex;
+  align-items: center;
+
+  min-width: 0;
+
+  /*
+   * The indentation is controlled by the level
+   * class below rather than inline JSX styles.
+   */
+}
+
+
+/* =========================================================
+   WBS INDENTATION
+   ========================================================= */
+
+.project-details-page
+  .wbs-level-0
+  .wbs-task-main {
+  padding-inline-start: 0;
+}
+
+.project-details-page
+  .wbs-level-1
+  .wbs-task-main {
+  padding-inline-start: 28px;
+}
+
+.project-details-page
+  .wbs-level-2
+  .wbs-task-main {
+  padding-inline-start: 56px;
+}
+
+.project-details-page
+  .wbs-level-3
+  .wbs-task-main {
+  padding-inline-start: 84px;
+}
+
+.project-details-page
+  .wbs-level-4
+  .wbs-task-main {
+  padding-inline-start: 112px;
+}
+
+
+/* =========================================================
+   TREE CONNECTOR
+   ========================================================= */
+
+.project-details-page
+  .wbs-level-1
+  .wbs-task-main::before,
+.project-details-page
+  .wbs-level-2
+  .wbs-task-main::before,
+.project-details-page
+  .wbs-level-3
+  .wbs-task-main::before,
+.project-details-page
+  .wbs-level-4
+  .wbs-task-main::before {
+  content: "";
+
+  position: absolute;
+
+  inset-inline-start: 12px;
+
+  top: -1px;
+  bottom: -1px;
+
+  width: 1px;
+
+  background: #cbd5e1;
+}
+
+
+/* =========================================================
+   HORIZONTAL TREE CONNECTOR
+   ========================================================= */
+
+.project-details-page
+  .wbs-level-1
+  .wbs-task-main::after,
+.project-details-page
+  .wbs-level-2
+  .wbs-task-main::after,
+.project-details-page
+  .wbs-level-3
+  .wbs-task-main::after,
+.project-details-page
+  .wbs-level-4
+  .wbs-task-main::after {
+  content: "";
+
+  position: absolute;
+
+  inset-inline-start: 12px;
+
+  top: 50%;
+
+  width: 14px;
+  height: 1px;
+
+  background: #cbd5e1;
+}
+
+
+/* =========================================================
+   DEEPER CONNECTOR POSITIONING
+   ========================================================= */
+
+.project-details-page
+  .wbs-level-2
+  .wbs-task-main::before {
+  inset-inline-start: 40px;
+}
+
+.project-details-page
+  .wbs-level-2
+  .wbs-task-main::after {
+  inset-inline-start: 40px;
+}
+
+.project-details-page
+  .wbs-level-3
+  .wbs-task-main::before {
+  inset-inline-start: 68px;
+}
+
+.project-details-page
+  .wbs-level-3
+  .wbs-task-main::after {
+  inset-inline-start: 68px;
+}
+
+.project-details-page
+  .wbs-level-4
+  .wbs-task-main::before {
+  inset-inline-start: 96px;
+}
+
+.project-details-page
+  .wbs-level-4
+  .wbs-task-main::after {
+  inset-inline-start: 96px;
+}
+
+
+/* =========================================================
+   EXPAND BUTTON
+   ========================================================= */
+
+.project-details-page .wbs-expand-button {
+  position: relative;
+  z-index: 2;
+
+  flex: 0 0 30px;
+
+  width: 30px;
+  height: 30px;
+
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+
+  margin-inline-end: 8px;
+
+  padding: 0;
+
+  border: 1px solid #cbd5e1;
+  border-radius: 7px;
+
+  background: #ffffff;
+
+  color: #475569;
+
+  cursor: pointer;
+
+  transition:
+    background-color 0.18s ease,
+    border-color 0.18s ease,
+    color 0.18s ease;
+}
+
+.project-details-page .wbs-expand-button:hover {
+  background: #f8fafc;
+  border-color: #94a3b8;
+  color: #1e293b;
+}
+
+
+/* =========================================================
+   EXPAND ICON
+   ========================================================= */
+
+.project-details-page .wbs-expand-icon {
+  display: inline-block;
+
+  font-size: 18px;
+  line-height: 1;
+
+  transform: rotate(0deg);
+
+  transition: transform 0.18s ease;
+}
+
+.project-details-page .wbs-expand-icon.expanded {
+  transform: rotate(90deg);
+}
+
+
+/* =========================================================
+   NO CHILD PLACEHOLDER
+   ========================================================= */
+
+.project-details-page .wbs-expand-placeholder {
+  flex: 0 0 30px;
+
+  width: 30px;
+  height: 30px;
+
+  margin-inline-end: 8px;
+}
+
+
+/* =========================================================
+   TASK INFORMATION
+   ========================================================= */
+
+.project-details-page .wbs-task-info {
+  min-width: 0;
+
+  display: flex;
+  flex-direction: column;
+
+  gap: 5px;
+}
+
+.project-details-page .wbs-task-identity {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+
+  min-width: 0;
+}
+
+
+/* =========================================================
+   TASK CODE
+   ========================================================= */
+
+.project-details-page .wbs-task-code {
+  display: inline-flex;
+  align-items: center;
+
+  width: fit-content;
+
+  font-family:
+    "SFMono-Regular",
+    Consolas,
+    "Liberation Mono",
+    monospace;
+
+  font-size: 11px;
+  font-weight: 700;
+
+  color: #64748b;
+}
+
+
+/* =========================================================
+   TOP LEVEL CODE
+   ========================================================= */
+
+.project-details-page
+  .wbs-level-0
+  .wbs-task-code {
+  color: #1d4ed8;
+}
+
+
+/* =========================================================
+   GROUP BADGE
+   ========================================================= */
+
+.project-details-page .wbs-parent-indicator {
+  display: inline-flex;
+  align-items: center;
+
+  padding: 2px 7px;
+
+  border-radius: 999px;
+
+  background: #dbeafe;
+
+  color: #2563eb;
+
+  font-size: 10px;
+  font-weight: 700;
+}
+
+
+/* =========================================================
+   TASK NAME
+   ========================================================= */
+
+.project-details-page .wbs-task-name {
+  display: block;
+
+  min-width: 0;
+
+  overflow: hidden;
+
+  text-overflow: ellipsis;
+
+  color: #1e293b;
+
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+
+/* Main WBS names are visually stronger */
+
+.project-details-page
+  .wbs-level-0
+  .wbs-task-name {
+  color: #172554;
+
+  font-size: 15px;
+  font-weight: 700;
+}
+
+
+/* Deeper levels */
+
+.project-details-page
+  .wbs-level-1
+  .wbs-task-name {
+  font-weight: 600;
+}
+
+.project-details-page
+  .wbs-level-2
+  .wbs-task-name,
+.project-details-page
+  .wbs-level-3
+  .wbs-task-name,
+.project-details-page
+  .wbs-level-4
+  .wbs-task-name {
+  font-weight: 500;
+}
+
+
+/* =========================================================
+   PROGRESS
+   ========================================================= */
+
+.project-details-page .wbs-task-progress {
+  min-width: 0;
+}
+
+.project-details-page .wbs-progress-header {
+  display: flex;
+  justify-content: flex-end;
+
+  margin-bottom: 5px;
+}
+
+.project-details-page .wbs-progress-value {
+  font-size: 11px;
+  font-weight: 700;
+  color: #334155;
+}
+
+.project-details-page .wbs-progress-track {
+  width: 100%;
+  height: 7px;
+
+  overflow: hidden;
+
+  border-radius: 999px;
+
+  background: #e5e7eb;
+}
+
+.project-details-page .wbs-progress-fill {
+  height: 100%;
+
+  border-radius: inherit;
+
+  background: #2563eb;
+
+  transition: width 0.25s ease;
+}
+
+
+/* =========================================================
+   WEIGHT
+   ========================================================= */
+
+.project-details-page .wbs-task-weight {
+  text-align: center;
+
+  font-size: 13px;
+  font-weight: 700;
+
+  color: #334155;
+}
+
+
+/* =========================================================
+   STATUS
+   ========================================================= */
+
+.project-details-page .wbs-task-status {
+  display: flex;
+  justify-content: center;
+
+  min-width: 0;
+}
+
+
+/* =========================================================
+   ACTIONS
+   ========================================================= */
+
+.project-details-page .wbs-task-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.project-details-page .wbs-add-child-button {
+  width: 28px;
+  height: 28px;
+
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+
+  padding: 0;
+
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+
+  background: #ffffff;
+
+  color: #334155;
+
+  font-size: 17px;
+  line-height: 1;
+
+  cursor: pointer;
+
+  transition:
+    background-color 0.18s ease,
+    border-color 0.18s ease,
+    color 0.18s ease;
+}
+
+.project-details-page .wbs-add-child-button:hover {
+  background: #f1f5f9;
+  border-color: #94a3b8;
+  color: #1e293b;
+}
+
+
+/* =========================================================
+   CHILDREN
+   ========================================================= */
+
+.project-details-page .wbs-task-children {
+  position: relative;
+}
+
+
+/* =========================================================
+   INLINE CHILD FORM
+   ========================================================= */
+
+.project-details-page .wbs-inline-child-form {
+  margin-top: 4px;
+  margin-bottom: 8px;
+}
+
+
+/* =========================================================
+   MOBILE
+   ========================================================= */
+
+@media (max-width: 900px) {
+
+  .project-details-page .wbs-table-header {
+    display: none;
+  }
+
+  .project-details-page .wbs-task-row {
+    display: grid;
+
+    grid-template-columns:
+      minmax(0, 1fr)
+      70px
+      44px;
+
+    gap: 10px;
+
+    padding: 12px;
+  }
+
+  .project-details-page .wbs-task-main {
+    grid-column: 1 / -1;
+  }
+
+  .project-details-page .wbs-task-progress {
+    grid-column: 1;
+  }
+
+  .project-details-page .wbs-task-weight {
+    grid-column: 2;
+
+    align-self: center;
+  }
+
+  .project-details-page .wbs-task-status {
+    grid-column: 1;
+    justify-content: flex-start;
+  }
+
+  .project-details-page .wbs-task-actions {
+    grid-column: 3;
+    grid-row: 2 / span 2;
+  }
+
+  .project-details-page
+    .wbs-level-1
+    .wbs-task-main {
+    padding-inline-start: 22px;
+  }
+
+  .project-details-page
+    .wbs-level-2
+    .wbs-task-main {
+    padding-inline-start: 44px;
+  }
+
+  .project-details-page
+    .wbs-level-3
+    .wbs-task-main {
+    padding-inline-start: 66px;
+  }
+
+  .project-details-page
+    .wbs-level-4
+    .wbs-task-main {
+    padding-inline-start: 88px;
+  }
+
+  .project-details-page
+    .wbs-level-2
+    .wbs-task-main::before {
+    inset-inline-start: 31px;
+  }
+
+  .project-details-page
+    .wbs-level-2
+    .wbs-task-main::after {
+    inset-inline-start: 31px;
+  }
+
+  .project-details-page
+    .wbs-level-3
+    .wbs-task-main::before {
+    inset-inline-start: 53px;
+  }
+
+  .project-details-page
+    .wbs-level-3
+    .wbs-task-main::after {
+    inset-inline-start: 53px;
+  }
+
+  .project-details-page
+    .wbs-level-4
+    .wbs-task-main::before {
+    inset-inline-start: 75px;
+  }
+
+  .project-details-page
+    .wbs-level-4
+    .wbs-task-main::after {
+    inset-inline-start: 75px;
+  }
+
+}
+
+
+/* =========================================================
+   SMALL MOBILE
+   ========================================================= */
+
+@media (max-width: 560px) {
+
+  .project-details-page .wbs-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .project-details-page .wbs-summary {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .project-details-page .wbs-task-row {
+    grid-template-columns:
+      minmax(0, 1fr)
+      54px
+      40px;
+
+    min-height: 70px;
+
+    padding: 10px;
+  }
+
+  .project-details-page
+    .wbs-task-name {
+    font-size: 13px;
+  }
+
+  .project-details-page
+    .wbs-level-0
+    .wbs-task-name {
+    font-size: 14px;
+  }
+
+  .project-details-page
+    .wbs-level-1
+    .wbs-task-main {
+    padding-inline-start: 18px;
+  }
+
+  .project-details-page
+    .wbs-level-2
+    .wbs-task-main {
+    padding-inline-start: 36px;
+  }
+
+  .project-details-page
+    .wbs-level-3
+    .wbs-task-main {
+    padding-inline-start: 54px;
+  }
+
+  .project-details-page
+    .wbs-level-4
+    .wbs-task-main {
+    padding-inline-start: 72px;
+  }
+
+}

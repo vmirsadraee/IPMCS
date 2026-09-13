@@ -314,3 +314,34 @@ class ProjectWBSResponse(BaseModel):
     project_name: str
 
     tasks: list[WBSTaskResponse]
+
+# =========================================
+# Project Setup Wizard
+# =========================================
+
+class ProjectSetupTask(BaseModel):
+    code: str
+    name: str
+    description: str | None = None
+
+    status: str = "not_started"
+    priority: str = "medium"
+
+    progress_type: str = "manual"
+    include_in_progress: bool = True
+
+    planned_start: date | None = None
+    planned_finish: date | None = None
+
+    actual_start: date | None = None
+    actual_finish: date | None = None
+
+    progress: float = 0
+    weight: float = 0
+
+    notes: str | None = None
+
+
+class ProjectSetupCreate(BaseModel):
+    project: ProjectCreate
+    main_operations: list[ProjectSetupTask]

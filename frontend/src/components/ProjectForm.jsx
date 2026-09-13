@@ -1,3 +1,4 @@
+
 import { useEffect, useState } from "react";
 import { useLanguage } from "../context/LanguageContext";
 
@@ -61,12 +62,19 @@ function ProjectForm({
 
       const method = project ? "PUT" : "POST";
 
+      const payload = {
+        ...formData,
+
+        // New projects must always start in Planning.
+        status: project ? formData.status : "planning",
+      };
+
       const response = await fetch(url, {
         method,
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(formData),
+        body: JSON.stringify(payload),
       });
 
       if (!response.ok) {
@@ -84,7 +92,6 @@ function ProjectForm({
       } else {
         onProjectCreated(savedProject);
       }
-
     } catch (error) {
       console.error(error);
 
@@ -173,28 +180,41 @@ function ProjectForm({
               {t("status")}
             </label>
 
-            <select
-              id="status"
-              name="status"
-              value={formData.status}
-              onChange={handleChange}
-            >
-              <option value="planning">
-                {t("planning")}
-              </option>
+            {project ? (
+              <select
+                id="status"
+                name="status"
+                value={formData.status}
+                onChange={handleChange}
+              >
+                <option value="planning">
+                  {t("planning")}
+                </option>
 
-              <option value="active">
-                {t("active")}
-              </option>
+                <option value="active">
+                  {t("active")}
+                </option>
 
-              <option value="on_hold">
-                {t("onHold")}
-              </option>
+                <option value="on_hold">
+                  {t("onHold")}
+                </option>
 
-              <option value="completed">
-                {t("completed")}
-              </option>
-            </select>
+                <option value="completed">
+                  {t("completed")}
+                </option>
+              </select>
+            ) : (
+              <select
+                id="status"
+                name="status"
+                value="planning"
+                disabled
+              >
+                <option value="planning">
+                  {t("planning")}
+                </option>
+              </select>
+            )}
           </div>
 
         </div>
