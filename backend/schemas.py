@@ -1,4 +1,3 @@
-
 from datetime import date, datetime
 from pydantic import BaseModel, Field
 
@@ -38,6 +37,7 @@ class TaskCreate(BaseModel):
     description: str | None = None
 
     status: str = "not_started"
+    execution_state: str = "not_evaluated"
     priority: str = "medium"
     progress_type: str = "manual"
     include_in_progress: bool = True
@@ -54,7 +54,6 @@ class TaskCreate(BaseModel):
         le=100,
     )
 
-    
     weight: float = Field(
         default=100,
         ge=0,
@@ -72,6 +71,7 @@ class TaskUpdate(BaseModel):
     description: str | None = None
 
     status: str | None = None
+    execution_state: str | None = None
     priority: str | None = None
     progress_type: str | None = None
     include_in_progress: bool | None = None
@@ -96,6 +96,7 @@ class TaskUpdate(BaseModel):
 
     notes: str | None = None
 
+
 class TaskResponse(BaseModel):
     id: int
     project_id: int
@@ -106,6 +107,7 @@ class TaskResponse(BaseModel):
     description: str | None = None
 
     status: str
+    execution_state: str
     priority: str
     progress_type: str
     include_in_progress: bool
@@ -120,6 +122,50 @@ class TaskResponse(BaseModel):
     weight: float
 
     notes: str | None = None
+
+    class Config:
+        from_attributes = True
+
+
+# =========================================
+# Task Dependency
+# =========================================
+
+class TaskDependencyCreate(BaseModel):
+    predecessor_task_id: int
+    successor_task_id: int
+
+    dependency_type: str = Field(
+        default="FS",
+        pattern="^(FS|SS|FF|SF)$",
+    )
+
+    lag_days: int = Field(
+        default=0,
+        ge=0,
+    )
+
+
+class TaskDependencyUpdate(BaseModel):
+    dependency_type: str | None = Field(
+        default=None,
+        pattern="^(FS|SS|FF|SF)$",
+    )
+
+    lag_days: int | None = Field(
+        default=None,
+        ge=0,
+    )
+
+
+class TaskDependencyResponse(BaseModel):
+    id: int
+
+    predecessor_task_id: int
+    successor_task_id: int
+
+    dependency_type: str
+    lag_days: int
 
     class Config:
         from_attributes = True
@@ -196,6 +242,7 @@ class TaskProgressResponse(BaseModel):
 
     quantity_variance: float | None = None
 
+
 # =========================================
 # Weighted Task Progress
 # =========================================
@@ -219,7 +266,8 @@ class WeightedProgressResponse(BaseModel):
 
     children: list[WeightedProgressChildResponse]
 
-    # =========================================
+
+# =========================================
 # Project Progress
 # =========================================
 
@@ -241,6 +289,7 @@ class ProjectProgressResponse(BaseModel):
 
     children: list[ProjectProgressChildResponse]
 
+
 # =========================================
 # Weight Validation
 # =========================================
@@ -250,7 +299,9 @@ class WeightValidationResponse(BaseModel):
     task_name: str
 
     total_weight: float
-    is_valid: bool    
+    is_valid: bool
+
+
 # =========================================
 # Task Quantity History
 # =========================================
@@ -267,6 +318,7 @@ class TaskQuantityHistoryResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
 
 # =========================================
 # Task Progress History
@@ -285,6 +337,7 @@ class TaskProgressHistoryResponse(BaseModel):
     class Config:
         from_attributes = True
 
+
 # =========================================
 # WBS Tree
 # =========================================
@@ -298,6 +351,7 @@ class WBSTaskResponse(BaseModel):
     name: str
 
     status: str
+    execution_state: str
     priority: str
     progress_type: str
 
@@ -314,6 +368,7 @@ class ProjectWBSResponse(BaseModel):
     project_name: str
 
     tasks: list[WBSTaskResponse]
+
 
 # =========================================
 # Project Setup Wizard
@@ -345,3 +400,49 @@ class ProjectSetupTask(BaseModel):
 class ProjectSetupCreate(BaseModel):
     project: ProjectCreate
     main_operations: list[ProjectSetupTask]
+
+# =========================================
+# Task Dependencies
+# =========================================
+
+class TaskDependencyCreate(BaseModel):
+    predecessor_task_id: int
+    successor_task_id: int
+
+    dependency_type: str = "FS"
+
+    lag_days: int = 0
+
+
+class TaskDependencyResponse(BaseModel):
+    id: int
+
+    predecessor_task_id: int
+    successor_task_id: int
+
+    dependency_type: str
+    lag_days: int
+
+    class Config:
+        from_attributes = True
+
+
+# =========================================
+# Task Execution Readiness
+# =========================================
+
+class TaskBlockingReason(BaseModel):
+    predecessor_task_id: int
+    predecessor_task_name: str
+    predecessor_status: str
+    dependency_type: str
+    reason: str
+
+
+class TaskReadinessResponse(BaseModel):
+    task_id: int
+    task_name: str
+
+    readiness: str
+
+    blocking_reasons: list[TaskBlockingReason]

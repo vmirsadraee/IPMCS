@@ -1,8 +1,7 @@
 from fastapi import FastAPI, Depends, HTTPException
-from sqlalchemy.exc import IntegrityError
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
 from database import Base, engine, SessionLocal
 
@@ -12,6 +11,7 @@ from models import (
     TaskQuantity,
     TaskQuantityHistory,
     TaskProgressHistory,
+    TaskDependency,
 )
 
 from schemas import (
@@ -34,6 +34,10 @@ from schemas import (
     WBSTaskResponse,
     ProjectWBSResponse,
     ProjectSetupCreate,
+    TaskDependencyCreate,
+    TaskDependencyResponse,
+    TaskBlockingReason,
+    TaskReadinessResponse,
 )
 
 
@@ -82,7 +86,7 @@ def get_db():
 
 def calculate_task_progress(
     task: Task,
-    db: Session
+    db: Session,
 ) -> float:
 
     # -----------------------------------------
@@ -116,7 +120,7 @@ def calculate_task_progress(
 
         return min(
             (actual / planned) * 100,
-            100
+            100,
         )
 
     # -----------------------------------------
@@ -129,7 +133,7 @@ def calculate_task_progress(
             db.query(Task)
             .filter(
                 Task.parent_task_id == task.id,
-                Task.include_in_progress.is_(True)
+                Task.include_in_progress.is_(True),
             )
             .order_by(Task.id)
             .all()
@@ -147,10 +151,10 @@ def calculate_task_progress(
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    f"Child task weights must total 100. "
+                    "Child task weights must total 100. "
                     f"Task {task.id} total weight: "
                     f"{total_weight}"
-                )
+                ),
             )
 
         weighted_progress = 0
@@ -159,13 +163,13 @@ def calculate_task_progress(
 
             child_progress = calculate_task_progress(
                 child,
-                db
+                db,
             )
 
             weighted_progress += (
-                child_progress *
-                float(child.weight) /
-                100
+                child_progress
+                * float(child.weight)
+                / 100
             )
 
         return round(weighted_progress, 2)
@@ -180,8 +184,257 @@ def calculate_task_progress(
             "Unsupported progress_type. "
             "Allowed values are: "
             "manual, quantity, weighted"
-        )
+        ),
     )
+
+
+# =========================================
+# Dependency Validation
+# =========================================
+
+def dependency_would_create_cycle(
+    db: Session,
+    predecessor_task_id: int,
+    successor_task_id: int,
+) -> bool:
+    """
+    Check whether adding:
+
+        predecessor -> successor
+
+    would create a circular dependency.
+    """
+
+    visited = set()
+
+    stack = [predecessor_task_id]
+
+    while stack:
+
+        current_task_id = stack.pop()
+
+        if current_task_id in visited:
+            continue
+
+        visited.add(current_task_id)
+
+        if current_task_id == successor_task_id:
+            return True
+
+        downstream_dependencies = (
+            db.query(TaskDependency)
+            .filter(
+                TaskDependency.predecessor_task_id
+                == current_task_id
+            )
+            .all()
+        )
+
+        for dependency in downstream_dependencies:
+
+            next_task_id = (
+                dependency.successor_task_id
+            )
+
+            if next_task_id not in visited:
+                stack.append(next_task_id)
+
+    return False
+
+
+# =========================================
+# Calculate Task Readiness
+# =========================================
+
+def calculate_task_readiness(
+    task: Task,
+    db: Session,
+):
+    dependencies = (
+        db.query(TaskDependency)
+        .filter(
+            TaskDependency.successor_task_id
+            == task.id
+        )
+        .order_by(TaskDependency.id)
+        .all()
+    )
+
+    blocking_reasons = []
+
+    for dependency in dependencies:
+
+        predecessor = (
+            db.query(Task)
+            .filter(
+                Task.id
+                == dependency.predecessor_task_id
+            )
+            .first()
+        )
+
+        if predecessor is None:
+            continue
+
+        # -------------------------------------
+        # Finish-to-Start
+        # -------------------------------------
+
+        if dependency.dependency_type == "FS":
+
+            if predecessor.status != "completed":
+
+                blocking_reasons.append(
+                    TaskBlockingReason(
+                        predecessor_task_id=predecessor.id,
+                        predecessor_task_name=predecessor.name,
+                        predecessor_status=predecessor.status,
+                        dependency_type="FS",
+                        reason=(
+                            "Predecessor task "
+                            "must be completed."
+                        ),
+                    )
+                )
+
+        # -------------------------------------
+        # Start-to-Start
+        # -------------------------------------
+
+        elif dependency.dependency_type == "SS":
+
+            if predecessor.status == "not_started":
+
+                blocking_reasons.append(
+                    TaskBlockingReason(
+                        predecessor_task_id=predecessor.id,
+                        predecessor_task_name=predecessor.name,
+                        predecessor_status=predecessor.status,
+                        dependency_type="SS",
+                        reason=(
+                            "Predecessor task "
+                            "must have started."
+                        ),
+                    )
+                )
+
+        # -------------------------------------
+        # Finish-to-Finish
+        # -------------------------------------
+
+        elif dependency.dependency_type == "FF":
+
+            if predecessor.status != "completed":
+
+                blocking_reasons.append(
+                    TaskBlockingReason(
+                        predecessor_task_id=predecessor.id,
+                        predecessor_task_name=predecessor.name,
+                        predecessor_status=predecessor.status,
+                        dependency_type="FF",
+                        reason=(
+                            "Predecessor task "
+                            "must be completed."
+                        ),
+                    )
+                )
+
+        # -------------------------------------
+        # Start-to-Finish
+        # -------------------------------------
+
+        elif dependency.dependency_type == "SF":
+
+            if predecessor.status == "not_started":
+
+                blocking_reasons.append(
+                    TaskBlockingReason(
+                        predecessor_task_id=predecessor.id,
+                        predecessor_task_name=predecessor.name,
+                        predecessor_status=predecessor.status,
+                        dependency_type="SF",
+                        reason=(
+                            "Predecessor task "
+                            "must have started."
+                        ),
+                    )
+                )
+
+    # -----------------------------------------
+    # Final readiness
+    # -----------------------------------------
+
+    if blocking_reasons:
+        readiness = "blocked"
+    else:
+        readiness = "ready"
+
+    return readiness, blocking_reasons
+
+
+# =========================================
+# Refresh Task Execution State
+# =========================================
+
+def refresh_task_execution_state(
+    task: Task,
+    db: Session,
+):
+    readiness, _ = calculate_task_readiness(
+        task,
+        db,
+    )
+
+    task.execution_state = readiness
+
+    return readiness
+
+
+# =========================================
+# Refresh Successor Execution States
+# =========================================
+
+def refresh_successor_execution_states(
+    task: Task,
+    db: Session,
+):
+    dependencies = (
+        db.query(TaskDependency)
+        .filter(
+            TaskDependency.predecessor_task_id
+            == task.id
+        )
+        .order_by(TaskDependency.id)
+        .all()
+    )
+
+    refreshed_task_ids = set()
+
+    for dependency in dependencies:
+
+        successor = (
+            db.query(Task)
+            .filter(
+                Task.id
+                == dependency.successor_task_id
+            )
+            .first()
+        )
+
+        if successor is None:
+            continue
+
+        if successor.id in refreshed_task_ids:
+            continue
+
+        refresh_task_execution_state(
+            successor,
+            db,
+        )
+
+        refreshed_task_ids.add(successor.id)
+
+    return refreshed_task_ids
 
 
 # =========================================
@@ -192,7 +445,7 @@ def calculate_task_progress(
 def root():
     return {
         "message": "IPMCS Backend is running",
-        "status": "ok"
+        "status": "ok",
     }
 
 
@@ -203,7 +456,7 @@ def root():
 @app.get("/api/health")
 def health():
     return {
-        "status": "healthy"
+        "status": "healthy",
     }
 
 
@@ -211,13 +464,16 @@ def health():
 # Projects
 # =========================================
 
+# -----------------------------------------
 # Get all projects
+# -----------------------------------------
+
 @app.get(
     "/api/projects",
-    response_model=list[ProjectResponse]
+    response_model=list[ProjectResponse],
 )
 def get_projects(
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     return (
         db.query(Project)
@@ -226,10 +482,13 @@ def get_projects(
     )
 
 
+# -----------------------------------------
 # Dashboard summary
+# -----------------------------------------
+
 @app.get("/api/dashboard/summary")
 def dashboard_summary(
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     projects = db.query(Project).all()
 
@@ -274,11 +533,11 @@ def dashboard_summary(
 
 @app.post(
     "/api/projects",
-    response_model=ProjectResponse
+    response_model=ProjectResponse,
 )
 def create_project(
     project: ProjectCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     # -----------------------------------------
     # Normalize project code
@@ -289,7 +548,7 @@ def create_project(
     if not project_code:
         raise HTTPException(
             status_code=400,
-            detail="Project code cannot be empty"
+            detail="Project code cannot be empty",
         )
 
     # -----------------------------------------
@@ -308,7 +567,7 @@ def create_project(
             detail=(
                 f"Project code '{project_code}' "
                 "already exists."
-            )
+            ),
         )
 
     # -----------------------------------------
@@ -330,20 +589,18 @@ def create_project(
     except IntegrityError:
         db.rollback()
 
-        # Handle a possible race condition where
-        # another request created the same code
-        # between the duplicate check and commit.
         raise HTTPException(
             status_code=409,
             detail=(
                 f"Project code '{project_code}' "
                 "already exists."
-            )
+            ),
         )
 
     db.refresh(new_project)
 
     return new_project
+
 
 # =========================================
 # Create Project + Main WBS Atomically
@@ -351,11 +608,11 @@ def create_project(
 
 @app.post(
     "/api/projects/setup",
-    response_model=ProjectResponse
+    response_model=ProjectResponse,
 )
 def create_project_setup(
     setup: ProjectSetupCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """
     Create the project and its initial top-level WBS
@@ -374,7 +631,7 @@ def create_project_setup(
     if not project_code:
         raise HTTPException(
             status_code=400,
-            detail="Project code cannot be empty"
+            detail="Project code cannot be empty",
         )
 
     # -----------------------------------------
@@ -386,7 +643,7 @@ def create_project_setup(
     if not project_name:
         raise HTTPException(
             status_code=400,
-            detail="Project name cannot be empty"
+            detail="Project name cannot be empty",
         )
 
     # -----------------------------------------
@@ -405,7 +662,7 @@ def create_project_setup(
             detail=(
                 f"Project code '{project_code}' "
                 "already exists."
-            )
+            ),
         )
 
     # -----------------------------------------
@@ -418,7 +675,7 @@ def create_project_setup(
             detail=(
                 "At least one main project operation "
                 "is required."
-            )
+            ),
         )
 
     # -----------------------------------------
@@ -438,7 +695,7 @@ def create_project_setup(
                 detail=(
                     "Every main project operation "
                     "must have a code."
-                )
+                ),
             )
 
         if not operation_name:
@@ -447,7 +704,7 @@ def create_project_setup(
                 detail=(
                     "Every main project operation "
                     "must have a name."
-                )
+                ),
             )
 
         if operation_code in operation_codes:
@@ -456,7 +713,7 @@ def create_project_setup(
                 detail=(
                     f"Duplicate main operation code "
                     f"'{operation_code}'."
-                )
+                ),
             )
 
         operation_codes.add(operation_code)
@@ -476,7 +733,7 @@ def create_project_setup(
             detail=(
                 "Top-level task weights must total 100. "
                 f"Current total: {total_weight}"
-            )
+            ),
         )
 
     # -----------------------------------------
@@ -492,9 +749,7 @@ def create_project_setup(
         new_project = Project(
             code=project_code,
             name=project_name,
-            description=(
-                setup.project.description
-            ),
+            description=setup.project.description,
             status="planning",
         )
 
@@ -502,9 +757,6 @@ def create_project_setup(
 
         # -------------------------------------
         # Flush
-        #
-        # This gives us new_project.id
-        # without committing the transaction.
         # -------------------------------------
 
         db.flush()
@@ -517,8 +769,6 @@ def create_project_setup(
 
             new_task = Task(
                 project_id=new_project.id,
-
-                # Top-level WBS
                 parent_task_id=None,
 
                 code=operation.code.strip(),
@@ -573,7 +823,7 @@ def create_project_setup(
                 detail=(
                     f"Project or task code conflict "
                     f"for project '{project_code}'."
-                )
+                ),
             )
 
         raise HTTPException(
@@ -581,21 +831,10 @@ def create_project_setup(
             detail=(
                 "Project setup could not be completed "
                 "because of a database constraint."
-            )
+            ),
         )
 
     except Exception:
-
-        # -------------------------------------
-        # IMPORTANT
-        #
-        # Any failure in ANY stage rolls back:
-        #
-        # Project
-        # + all WBS tasks
-        #
-        # together.
-        # -------------------------------------
 
         db.rollback()
 
@@ -604,25 +843,23 @@ def create_project_setup(
             detail=(
                 "Project setup failed. "
                 "No incomplete project data was saved."
-            )
+            ),
         )
+
+
 # =========================================
 # Update an existing project
 # =========================================
 
 @app.put(
     "/api/projects/{project_id}",
-    response_model=ProjectResponse
+    response_model=ProjectResponse,
 )
 def update_project(
     project_id: int,
     project: ProjectCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
-    # -----------------------------------------
-    # Find project
-    # -----------------------------------------
-
     existing_project = (
         db.query(Project)
         .filter(Project.id == project_id)
@@ -632,32 +869,22 @@ def update_project(
     if existing_project is None:
         raise HTTPException(
             status_code=404,
-            detail="Project not found"
+            detail="Project not found",
         )
-
-    # -----------------------------------------
-    # Normalize project code
-    # -----------------------------------------
 
     project_code = project.code.strip()
 
     if not project_code:
         raise HTTPException(
             status_code=400,
-            detail="Project code cannot be empty"
+            detail="Project code cannot be empty",
         )
-
-    # -----------------------------------------
-    # Check duplicate code
-    #
-    # Exclude the current project itself.
-    # -----------------------------------------
 
     duplicate_project = (
         db.query(Project)
         .filter(
             Project.code == project_code,
-            Project.id != project_id
+            Project.id != project_id,
         )
         .first()
     )
@@ -668,12 +895,8 @@ def update_project(
             detail=(
                 f"Project code '{project_code}' "
                 "already exists."
-            )
+            ),
         )
-
-    # -----------------------------------------
-    # Update project
-    # -----------------------------------------
 
     existing_project.code = project_code
     existing_project.name = project.name.strip()
@@ -691,7 +914,7 @@ def update_project(
             detail=(
                 f"Project code '{project_code}' "
                 "already exists."
-            )
+            ),
         )
 
     db.refresh(existing_project)
@@ -702,14 +925,11 @@ def update_project(
 # =========================================
 # Delete a project
 # =========================================
-# =========================================
-# Delete a project
-# =========================================
 
 @app.delete("/api/projects/{project_id}")
 def delete_project(
     project_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     existing_project = (
         db.query(Project)
@@ -720,10 +940,11 @@ def delete_project(
     if existing_project is None:
         raise HTTPException(
             status_code=404,
-            detail="Project not found"
+            detail="Project not found",
         )
 
     try:
+
         # -----------------------------------------
         # Delete all tasks belonging to the project
         # -----------------------------------------
@@ -743,28 +964,34 @@ def delete_project(
         db.commit()
 
     except Exception:
+
         db.rollback()
 
         raise HTTPException(
             status_code=500,
-            detail="Project could not be deleted."
+            detail="Project could not be deleted.",
         )
 
     return {
         "message": "Project deleted successfully",
-        "id": project_id
+        "id": project_id,
     }
+
+
 # =========================================
 # Tasks
 # =========================================
 
+# -----------------------------------------
 # Get all tasks
+# -----------------------------------------
+
 @app.get(
     "/api/tasks",
-    response_model=list[TaskResponse]
+    response_model=list[TaskResponse],
 )
 def get_tasks(
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     return (
         db.query(Task)
@@ -779,11 +1006,11 @@ def get_tasks(
 
 @app.post(
     "/api/tasks",
-    response_model=TaskResponse
+    response_model=TaskResponse,
 )
 def create_task(
     task: TaskCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     # -----------------------------------------
     # Check project
@@ -798,7 +1025,7 @@ def create_task(
     if project is None:
         raise HTTPException(
             status_code=404,
-            detail="Project not found"
+            detail="Project not found",
         )
 
     # -----------------------------------------
@@ -816,14 +1043,13 @@ def create_task(
         if parent_task is None:
             raise HTTPException(
                 status_code=404,
-                detail="Parent task not found"
+                detail="Parent task not found",
             )
 
-        # Parent must belong to same project
         if parent_task.project_id != task.project_id:
             raise HTTPException(
                 status_code=400,
-                detail="Parent task belongs to another project"
+                detail="Parent task belongs to another project",
             )
 
     # -----------------------------------------
@@ -837,6 +1063,10 @@ def create_task(
         name=task.name,
         description=task.description,
         status=task.status,
+        execution_state=(
+            task.execution_state
+            or "not_evaluated"
+        ),
         priority=task.priority,
         progress_type=task.progress_type,
         planned_start=task.planned_start,
@@ -862,12 +1092,12 @@ def create_task(
 
 @app.put(
     "/api/tasks/{task_id}",
-    response_model=TaskResponse
+    response_model=TaskResponse,
 )
 def update_task(
     task_id: int,
     task: TaskUpdate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     # -----------------------------------------
     # Find task
@@ -882,7 +1112,7 @@ def update_task(
     if existing_task is None:
         raise HTTPException(
             status_code=404,
-            detail="Task not found"
+            detail="Task not found",
         )
 
     # -----------------------------------------
@@ -893,6 +1123,7 @@ def update_task(
 
     old_parent_task_id = existing_task.parent_task_id
     old_weight = float(existing_task.weight)
+
     old_include_in_progress = (
         existing_task.include_in_progress
     )
@@ -906,7 +1137,7 @@ def update_task(
         if task.parent_task_id == task_id:
             raise HTTPException(
                 status_code=400,
-                detail="A task cannot be its own parent"
+                detail="A task cannot be its own parent",
             )
 
         parent_task = (
@@ -918,13 +1149,13 @@ def update_task(
         if parent_task is None:
             raise HTTPException(
                 status_code=404,
-                detail="Parent task not found"
+                detail="Parent task not found",
             )
 
         if parent_task.project_id != existing_task.project_id:
             raise HTTPException(
                 status_code=400,
-                detail="Parent task belongs to another project"
+                detail="Parent task belongs to another project",
             )
 
         # -----------------------------------------
@@ -938,19 +1169,26 @@ def update_task(
             if current_parent_id == task_id:
                 raise HTTPException(
                     status_code=400,
-                    detail="Circular task hierarchy is not allowed"
+                    detail=(
+                        "Circular task hierarchy "
+                        "is not allowed"
+                    ),
                 )
 
             current_parent = (
                 db.query(Task)
-                .filter(Task.id == current_parent_id)
+                .filter(
+                    Task.id == current_parent_id
+                )
                 .first()
             )
 
             if current_parent is None:
                 break
 
-            current_parent_id = current_parent.parent_task_id
+            current_parent_id = (
+                current_parent.parent_task_id
+            )
 
     # -----------------------------------------
     # Determine proposed values
@@ -1006,9 +1244,12 @@ def update_task(
             sibling_tasks = (
                 db.query(Task)
                 .filter(
-                    Task.parent_task_id == new_parent_task_id,
+                    Task.parent_task_id
+                    == new_parent_task_id,
+
                     Task.id != task_id,
-                    Task.include_in_progress.is_(True)
+
+                    Task.include_in_progress.is_(True),
                 )
                 .all()
             )
@@ -1025,18 +1266,21 @@ def update_task(
 
             parent_task = (
                 db.query(Task)
-                .filter(Task.id == new_parent_task_id)
+                .filter(
+                    Task.id == new_parent_task_id
+                )
                 .first()
             )
 
             if (
                 parent_task is not None
-                and parent_task.progress_type == "weighted"
+                and parent_task.progress_type
+                == "weighted"
             ):
 
                 if round(
                     proposed_total_weight,
-                    3
+                    3,
                 ) != 100:
 
                     raise HTTPException(
@@ -1046,7 +1290,7 @@ def update_task(
                             "must total 100. "
                             f"Current proposed total: "
                             f"{proposed_total_weight}"
-                        )
+                        ),
                     )
 
     # -----------------------------------------
@@ -1144,6 +1388,17 @@ def update_task(
     if task.notes is not None:
         existing_task.notes = task.notes
 
+    # -----------------------------------------
+    # Update execution state
+    # -----------------------------------------
+
+    readiness, _ = calculate_task_readiness(
+        existing_task,
+        db,
+    )
+
+    existing_task.execution_state = readiness
+
     db.commit()
     db.refresh(existing_task)
 
@@ -1156,11 +1411,11 @@ def update_task(
 
 @app.get(
     "/api/tasks/{task_id}/progress-history",
-    response_model=list[TaskProgressHistoryResponse]
+    response_model=list[TaskProgressHistoryResponse],
 )
 def get_task_progress_history(
     task_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     task = (
         db.query(Task)
@@ -1171,7 +1426,7 @@ def get_task_progress_history(
     if task is None:
         raise HTTPException(
             status_code=404,
-            detail="Task not found"
+            detail="Task not found",
         )
 
     history = (
@@ -1194,11 +1449,11 @@ def get_task_progress_history(
 
 @app.get(
     "/api/tasks/{task_id}/weighted-progress",
-    response_model=WeightedProgressResponse
+    response_model=WeightedProgressResponse,
 )
 def get_weighted_task_progress(
     task_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     task = (
         db.query(Task)
@@ -1209,14 +1464,14 @@ def get_weighted_task_progress(
     if task is None:
         raise HTTPException(
             status_code=404,
-            detail="Task not found"
+            detail="Task not found",
         )
 
     children = (
         db.query(Task)
         .filter(
             Task.parent_task_id == task_id,
-            Task.include_in_progress.is_(True)
+            Task.include_in_progress.is_(True),
         )
         .order_by(Task.id)
         .all()
@@ -1245,7 +1500,7 @@ def get_weighted_task_progress(
                 f"Child task weights must total 100. "
                 f"Task {task.id} total weight: "
                 f"{total_weight}"
-            )
+            ),
         )
 
     weighted_progress = 0
@@ -1255,15 +1510,15 @@ def get_weighted_task_progress(
 
         child_progress = calculate_task_progress(
             child,
-            db
+            db,
         )
 
         child_weight = float(child.weight)
 
         contribution = (
-            child_progress *
-            child_weight /
-            100
+            child_progress
+            * child_weight
+            / 100
         )
 
         weighted_progress += contribution
@@ -1274,15 +1529,15 @@ def get_weighted_task_progress(
                 task_name=child.name,
                 progress=round(
                     child_progress,
-                    2
+                    2,
                 ),
                 weight=round(
                     child_weight,
-                    2
+                    2,
                 ),
                 contribution=round(
                     contribution,
-                    2
+                    2,
                 ),
             )
         )
@@ -1293,11 +1548,11 @@ def get_weighted_task_progress(
         "progress_type": task.progress_type,
         "progress": round(
             weighted_progress,
-            2
+            2,
         ),
         "total_weight": round(
             total_weight,
-            2
+            2,
         ),
         "children": children_result,
     }
@@ -1309,11 +1564,11 @@ def get_weighted_task_progress(
 
 @app.get(
     "/api/tasks/{task_id}/validate-weights",
-    response_model=WeightValidationResponse
+    response_model=WeightValidationResponse,
 )
 def validate_task_weights(
     task_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     task = (
         db.query(Task)
@@ -1324,14 +1579,14 @@ def validate_task_weights(
     if task is None:
         raise HTTPException(
             status_code=404,
-            detail="Task not found"
+            detail="Task not found",
         )
 
     children = (
         db.query(Task)
         .filter(
             Task.parent_task_id == task_id,
-            Task.include_in_progress.is_(True)
+            Task.include_in_progress.is_(True),
         )
         .order_by(Task.id)
         .all()
@@ -1359,9 +1614,293 @@ def validate_task_weights(
         "task_name": task.name,
         "total_weight": round(
             total_weight,
-            3
+            3,
         ),
         "is_valid": is_valid,
+    }
+
+
+# =========================================
+# Task Dependencies
+# =========================================
+
+@app.post(
+    "/api/task-dependencies",
+    response_model=TaskDependencyResponse,
+)
+def create_task_dependency(
+    dependency: TaskDependencyCreate,
+    db: Session = Depends(get_db),
+):
+    # -----------------------------------------
+    # Self dependency
+    # -----------------------------------------
+
+    if (
+        dependency.predecessor_task_id
+        == dependency.successor_task_id
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="A task cannot depend on itself.",
+        )
+
+    # -----------------------------------------
+    # Validate dependency type
+    # -----------------------------------------
+
+    allowed_types = {
+        "FS",
+        "SS",
+        "FF",
+        "SF",
+    }
+
+    dependency_type = (
+        dependency.dependency_type
+        .strip()
+        .upper()
+    )
+
+    if dependency_type not in allowed_types:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Unsupported dependency type. "
+                "Allowed values: FS, SS, FF, SF."
+            ),
+        )
+
+    # -----------------------------------------
+    # Find predecessor
+    # -----------------------------------------
+
+    predecessor = (
+        db.query(Task)
+        .filter(
+            Task.id
+            == dependency.predecessor_task_id
+        )
+        .first()
+    )
+
+    if predecessor is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Predecessor task not found.",
+        )
+
+    # -----------------------------------------
+    # Find successor
+    # -----------------------------------------
+
+    successor = (
+        db.query(Task)
+        .filter(
+            Task.id
+            == dependency.successor_task_id
+        )
+        .first()
+    )
+
+    if successor is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Successor task not found.",
+        )
+
+    # -----------------------------------------
+    # Same project validation
+    # -----------------------------------------
+
+    if predecessor.project_id != successor.project_id:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Tasks from different projects "
+                "cannot have a dependency."
+            ),
+        )
+
+    # -----------------------------------------
+    # Duplicate dependency
+    # -----------------------------------------
+
+    existing_dependency = (
+        db.query(TaskDependency)
+        .filter(
+            TaskDependency.predecessor_task_id
+            == dependency.predecessor_task_id,
+
+            TaskDependency.successor_task_id
+            == dependency.successor_task_id,
+        )
+        .first()
+    )
+
+    if existing_dependency is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This task dependency already exists."
+            ),
+        )
+
+    # -----------------------------------------
+    # Circular dependency validation
+    # -----------------------------------------
+
+    if dependency_would_create_cycle(
+        db,
+        dependency.predecessor_task_id,
+        dependency.successor_task_id,
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Circular task dependency is not allowed."
+            ),
+        )
+
+    # -----------------------------------------
+    # Create dependency
+    # -----------------------------------------
+
+    new_dependency = TaskDependency(
+        predecessor_task_id=(
+            dependency.predecessor_task_id
+        ),
+        successor_task_id=(
+            dependency.successor_task_id
+        ),
+        dependency_type=dependency_type,
+        lag_days=dependency.lag_days,
+    )
+
+    db.add(new_dependency)
+
+    try:
+        db.commit()
+
+    except IntegrityError:
+        db.rollback()
+
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Task dependency already exists."
+            ),
+        )
+
+    db.refresh(new_dependency)
+
+    return new_dependency
+
+
+# =========================================
+# Get Task Dependencies
+# =========================================
+
+@app.get(
+    "/api/tasks/{task_id}/dependencies",
+    response_model=list[TaskDependencyResponse],
+)
+def get_task_dependencies(
+    task_id: int,
+    db: Session = Depends(get_db),
+):
+    task = (
+        db.query(Task)
+        .filter(Task.id == task_id)
+        .first()
+    )
+
+    if task is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Task not found.",
+        )
+
+    dependencies = (
+        db.query(TaskDependency)
+        .filter(
+            (
+                TaskDependency.predecessor_task_id
+                == task_id
+            )
+            |
+            (
+                TaskDependency.successor_task_id
+                == task_id
+            )
+        )
+        .order_by(TaskDependency.id)
+        .all()
+    )
+
+    return dependencies
+
+
+# =========================================
+# Delete Task Dependency
+# =========================================
+
+@app.delete(
+    "/api/task-dependencies/{dependency_id}"
+)
+def delete_task_dependency(
+    dependency_id: int,
+    db: Session = Depends(get_db),
+):
+    dependency = (
+        db.query(TaskDependency)
+        .filter(
+            TaskDependency.id
+            == dependency_id
+        )
+        .first()
+    )
+
+    if dependency is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Task dependency not found.",
+        )
+
+    predecessor_task_id = (
+        dependency.predecessor_task_id
+    )
+
+    successor_task_id = (
+        dependency.successor_task_id
+    )
+
+    db.delete(dependency)
+    db.commit()
+
+    # Refresh successor readiness after dependency removal
+    successor = (
+        db.query(Task)
+        .filter(
+            Task.id == successor_task_id
+        )
+        .first()
+    )
+
+    if successor is not None:
+        refresh_task_execution_state(
+            successor,
+            db,
+        )
+        db.commit()
+
+    return {
+        "message": (
+            "Task dependency deleted successfully."
+        ),
+        "id": dependency_id,
+        "predecessor_task_id": predecessor_task_id,
+        "successor_task_id": successor_task_id,
     }
 
 
@@ -1371,11 +1910,11 @@ def validate_task_weights(
 
 @app.get(
     "/api/projects/{project_id}/progress",
-    response_model=ProjectProgressResponse
+    response_model=ProjectProgressResponse,
 )
 def get_project_progress(
     project_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     project = (
         db.query(Project)
@@ -1386,7 +1925,7 @@ def get_project_progress(
     if project is None:
         raise HTTPException(
             status_code=404,
-            detail="Project not found"
+            detail="Project not found",
         )
 
     tasks = (
@@ -1394,7 +1933,7 @@ def get_project_progress(
         .filter(
             Task.project_id == project_id,
             Task.parent_task_id.is_(None),
-            Task.include_in_progress.is_(True)
+            Task.include_in_progress.is_(True),
         )
         .order_by(Task.id)
         .all()
@@ -1421,7 +1960,7 @@ def get_project_progress(
             detail=(
                 "Top-level task weights must total 100. "
                 f"Current total: {total_weight}"
-            )
+            ),
         )
 
     project_progress = 0
@@ -1431,15 +1970,15 @@ def get_project_progress(
 
         task_progress = calculate_task_progress(
             task,
-            db
+            db,
         )
 
         task_weight = float(task.weight)
 
         contribution = (
-            task_progress *
-            task_weight /
-            100
+            task_progress
+            * task_weight
+            / 100
         )
 
         project_progress += contribution
@@ -1450,15 +1989,15 @@ def get_project_progress(
                 task_name=task.name,
                 progress=round(
                     task_progress,
-                    2
+                    2,
                 ),
                 weight=round(
                     task_weight,
-                    2
+                    2,
                 ),
                 contribution=round(
                     contribution,
-                    2
+                    2,
                 ),
             )
         )
@@ -1468,11 +2007,11 @@ def get_project_progress(
         "project_name": project.name,
         "progress": round(
             project_progress,
-            2
+            2,
         ),
         "total_weight": round(
             total_weight,
-            2
+            2,
         ),
         "children": children_result,
     }
@@ -1484,11 +2023,11 @@ def get_project_progress(
 
 @app.get(
     "/api/projects/{project_id}/wbs",
-    response_model=ProjectWBSResponse
+    response_model=ProjectWBSResponse,
 )
 def get_project_wbs(
     project_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     project = (
         db.query(Project)
@@ -1499,7 +2038,7 @@ def get_project_wbs(
     if project is None:
         raise HTTPException(
             status_code=404,
-            detail="Project not found"
+            detail="Project not found",
         )
 
     def build_task_tree(task: Task):
@@ -1508,7 +2047,7 @@ def get_project_wbs(
             db.query(Task)
             .filter(
                 Task.project_id == project_id,
-                Task.parent_task_id == task.id
+                Task.parent_task_id == task.id,
             )
             .order_by(Task.id)
             .all()
@@ -1516,7 +2055,7 @@ def get_project_wbs(
 
         task_progress = calculate_task_progress(
             task,
-            db
+            db,
         )
 
         return WBSTaskResponse(
@@ -1541,7 +2080,7 @@ def get_project_wbs(
         db.query(Task)
         .filter(
             Task.project_id == project_id,
-            Task.parent_task_id.is_(None)
+            Task.parent_task_id.is_(None),
         )
         .order_by(Task.id)
         .all()
@@ -1561,13 +2100,16 @@ def get_project_wbs(
 # Task Quantities
 # =========================================
 
+# -----------------------------------------
 # Get all task quantities
+# -----------------------------------------
+
 @app.get(
     "/api/task-quantities",
-    response_model=list[TaskQuantityResponse]
+    response_model=list[TaskQuantityResponse],
 )
 def get_task_quantities(
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     return (
         db.query(TaskQuantity)
@@ -1576,14 +2118,17 @@ def get_task_quantities(
     )
 
 
+# -----------------------------------------
 # Create task quantity
+# -----------------------------------------
+
 @app.post(
     "/api/task-quantities",
-    response_model=TaskQuantityResponse
+    response_model=TaskQuantityResponse,
 )
 def create_task_quantity(
     quantity: TaskQuantityCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     task = (
         db.query(Task)
@@ -1594,7 +2139,7 @@ def create_task_quantity(
     if task is None:
         raise HTTPException(
             status_code=404,
-            detail="Task not found"
+            detail="Task not found",
         )
 
     new_quantity = TaskQuantity(
@@ -1612,15 +2157,18 @@ def create_task_quantity(
     return new_quantity
 
 
+# -----------------------------------------
 # Update task quantity
+# -----------------------------------------
+
 @app.put(
     "/api/task-quantities/{quantity_id}",
-    response_model=TaskQuantityResponse
+    response_model=TaskQuantityResponse,
 )
 def update_task_quantity(
     quantity_id: int,
     quantity: TaskQuantityUpdate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     existing_quantity = (
         db.query(TaskQuantity)
@@ -1631,7 +2179,7 @@ def update_task_quantity(
     if existing_quantity is None:
         raise HTTPException(
             status_code=404,
-            detail="Task quantity not found"
+            detail="Task quantity not found",
         )
 
     old_actual_quantity = float(
@@ -1689,11 +2237,11 @@ def update_task_quantity(
 
 @app.get(
     "/api/task-quantities/{task_quantity_id}/history",
-    response_model=list[TaskQuantityHistoryResponse]
+    response_model=list[TaskQuantityHistoryResponse],
 )
 def get_task_quantity_history(
     task_quantity_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     history = (
         db.query(TaskQuantityHistory)
@@ -1716,11 +2264,11 @@ def get_task_quantity_history(
 
 @app.get(
     "/api/tasks/{task_id}/progress",
-    response_model=TaskProgressResponse
+    response_model=TaskProgressResponse,
 )
 def get_task_progress(
     task_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     task = (
         db.query(Task)
@@ -1731,12 +2279,12 @@ def get_task_progress(
     if task is None:
         raise HTTPException(
             status_code=404,
-            detail="Task not found"
+            detail="Task not found",
         )
 
     progress = calculate_task_progress(
         task,
-        db
+        db,
     )
 
     # -----------------------------------------
@@ -1796,7 +2344,7 @@ def get_task_progress(
             "progress": progress,
             "quantity_variance": round(
                 actual - planned,
-                2
+                2,
             ),
         }
 
@@ -1821,5 +2369,55 @@ def get_task_progress(
             "Unsupported progress_type. "
             "Allowed values are: "
             "manual, quantity, weighted"
+        ),
+    )
+
+
+# =========================================
+# Task Readiness
+# =========================================
+
+@app.get(
+    "/api/tasks/{task_id}/readiness",
+    response_model=TaskReadinessResponse,
+)
+def get_task_readiness(
+    task_id: int,
+    db: Session = Depends(get_db),
+):
+    task = (
+        db.query(Task)
+        .filter(Task.id == task_id)
+        .first()
+    )
+
+    if task is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Task not found.",
+        )
+
+    readiness, blocking_reasons = (
+        calculate_task_readiness(
+            task,
+            db,
         )
     )
+
+    # -----------------------------------------
+    # Store current execution state
+    # -----------------------------------------
+
+    refresh_task_execution_state(
+        task,
+        db,
+    )
+
+    db.commit()
+
+    return {
+        "task_id": task.id,
+        "task_name": task.name,
+        "readiness": readiness,
+        "blocking_reasons": blocking_reasons,
+    }

@@ -1,4 +1,3 @@
-
 from sqlalchemy import (
     Column,
     Integer,
@@ -11,16 +10,25 @@ from sqlalchemy import (
     Float,
     DateTime,
     Boolean,
+    Date,
 )
 from datetime import datetime
 
 from database import Base
 
 
+# =========================================
+# Project
+# =========================================
+
 class Project(Base):
     __tablename__ = "projects"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True,
+    )
 
     code = Column(
         String(50),
@@ -42,9 +50,39 @@ class Project(Base):
     status = Column(
         String(50),
         nullable=False,
-        default="planning",
+        default="not_started",
     )
 
+    execution_state = Column(
+        String(30),
+        nullable=False,
+        default="not_evaluated",
+    )
+
+    priority = Column(
+        String(50),
+        nullable=False,
+        default="medium",
+    )
+
+    # -----------------------------------------
+    # Real project start date
+    #
+    # This can remain NULL during project setup.
+    # Once the project actually starts, this date
+    # becomes the calendar reference for the
+    # relative project schedule.
+    # -----------------------------------------
+
+    start_date = Column(
+        Date,
+        nullable=True,
+    )
+
+
+# =========================================
+# Task
+# =========================================
 
 class Task(Base):
     __tablename__ = "tasks"
@@ -90,11 +128,50 @@ class Task(Base):
         default="not_started",
     )
 
+    execution_state = Column(
+    String(30),
+    nullable=False,
+    default="not_evaluated",
+    )
+
     priority = Column(
         String(50),
         nullable=False,
         default="medium",
     )
+
+    # -----------------------------------------
+    # Relative project schedule
+    #
+    # These values are measured from project
+    # Day 0, not from a calendar date.
+    #
+    # Example:
+    #
+    # planned_start_day = 0
+    # planned_finish_day = 30
+    #
+    # means the task is planned from project
+    # Day 0 through Day 30.
+    # -----------------------------------------
+
+    planned_start_day = Column(
+        Integer,
+        nullable=True,
+    )
+
+    planned_finish_day = Column(
+        Integer,
+        nullable=True,
+    )
+
+    # -----------------------------------------
+    # Legacy / existing calendar plan
+    #
+    # Kept temporarily so existing project data
+    # is not lost while the new relative schedule
+    # is being introduced.
+    # -----------------------------------------
 
     planned_start = Column(
         String(10),
@@ -106,6 +183,10 @@ class Task(Base):
         nullable=True,
     )
 
+    # -----------------------------------------
+    # Actual execution dates
+    # -----------------------------------------
+
     actual_start = Column(
         String(10),
         nullable=True,
@@ -115,6 +196,10 @@ class Task(Base):
         String(10),
         nullable=True,
     )
+
+    # -----------------------------------------
+    # Progress
+    # -----------------------------------------
 
     progress_type = Column(
         String(20),
@@ -128,12 +213,20 @@ class Task(Base):
         default=0,
     )
 
-    # Weight of this task relative to its parent task
+    # -----------------------------------------
+    # Weight
+    # -----------------------------------------
+
+    # Weight of this task relative to its parent
     weight = Column(
         Numeric(8, 3),
         nullable=False,
         default=100,
     )
+
+    # -----------------------------------------
+    # Progress inclusion
+    # -----------------------------------------
 
     # Include this task in progress calculations
     include_in_progress = Column(
@@ -141,7 +234,11 @@ class Task(Base):
         nullable=False,
         default=True,
     )
-    
+
+    # -----------------------------------------
+    # Notes
+    # -----------------------------------------
+
     notes = Column(
         Text,
         nullable=True,
@@ -153,15 +250,37 @@ class Task(Base):
             "code",
             name="uq_task_project_code",
         ),
+
         CheckConstraint(
             "progress >= 0 AND progress <= 100",
             name="ck_task_progress_range",
         ),
+
         CheckConstraint(
             "weight >= 0 AND weight <= 100",
             name="ck_task_weight_range",
         ),
+
+        CheckConstraint(
+            "planned_start_day IS NULL "
+            "OR planned_start_day >= 0",
+            name="ck_task_planned_start_day",
+        ),
+
+        CheckConstraint(
+            "planned_finish_day IS NULL "
+            "OR planned_finish_day >= 0",
+            name="ck_task_planned_finish_day",
+        ),
+
+        CheckConstraint(
+            "planned_start_day IS NULL "
+            "OR planned_finish_day IS NULL "
+            "OR planned_finish_day >= planned_start_day",
+            name="ck_task_relative_schedule",
+        ),
     )
+
 
 # =========================================
 # Task Progress History
@@ -206,7 +325,16 @@ class TaskProgressHistory(Base):
         nullable=False,
         default=datetime.utcnow,
     )
-    
+
+
+# =========================================
+# Task Dependency
+# =========================================
+#
+# Kept in the database for future use.
+# It is intentionally NOT part of the current
+# execution logic.
+#
 
 class TaskDependency(Base):
     __tablename__ = "task_dependencies"
