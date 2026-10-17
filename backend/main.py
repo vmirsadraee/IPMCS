@@ -2,8 +2,8 @@ from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-
 from database import Base, engine, SessionLocal
+from datetime import date, datetime
 
 from models import (
     Project,
@@ -12,6 +12,9 @@ from models import (
     TaskQuantityHistory,
     TaskProgressHistory,
     TaskDependency,
+    TaskExecutionReport,
+    TaskExecutionReportHistory,
+    TaskExecutionBaseline,
 )
 
 from schemas import (
@@ -38,6 +41,10 @@ from schemas import (
     TaskDependencyResponse,
     TaskBlockingReason,
     TaskReadinessResponse,
+    TaskExecutionReportCreate,
+    TaskExecutionReportUpdate,
+    TaskExecutionReportResponse,
+    TaskExecutionReportHistoryResponse,
 )
 
 
@@ -187,7 +194,6 @@ def calculate_task_progress(
         ),
     )
 
-
 # =========================================
 # Dependency Validation
 # =========================================
@@ -203,23 +209,25 @@ def dependency_would_create_cycle(
         predecessor -> successor
 
     would create a circular dependency.
+
+    A cycle is created if the successor can
+    already reach the predecessor through
+    existing downstream dependencies.
     """
 
     visited = set()
-
-    stack = [predecessor_task_id]
+    stack = [successor_task_id]
 
     while stack:
-
         current_task_id = stack.pop()
+
+        if current_task_id == predecessor_task_id:
+            return True
 
         if current_task_id in visited:
             continue
 
         visited.add(current_task_id)
-
-        if current_task_id == successor_task_id:
-            return True
 
         downstream_dependencies = (
             db.query(TaskDependency)
@@ -231,30 +239,35 @@ def dependency_would_create_cycle(
         )
 
         for dependency in downstream_dependencies:
-
-            next_task_id = (
-                dependency.successor_task_id
-            )
+            next_task_id = dependency.successor_task_id
 
             if next_task_id not in visited:
                 stack.append(next_task_id)
 
     return False
 
-
 # =========================================
 # Calculate Task Readiness
 # =========================================
-
 def calculate_task_readiness(
     task: Task,
     db: Session,
 ):
+    """
+    Determine whether a task is ready to START.
+
+    FS: predecessor must be completed.
+    SS: predecessor must have started.
+    FF: constrains task finish, not task start.
+    SF: constrains task finish, not task start.
+
+    Time-based lag calculations belong to scheduling logic.
+    """
+
     dependencies = (
         db.query(TaskDependency)
         .filter(
-            TaskDependency.successor_task_id
-            == task.id
+            TaskDependency.successor_task_id == task.id
         )
         .order_by(TaskDependency.id)
         .all()
@@ -263,12 +276,10 @@ def calculate_task_readiness(
     blocking_reasons = []
 
     for dependency in dependencies:
-
         predecessor = (
             db.query(Task)
             .filter(
-                Task.id
-                == dependency.predecessor_task_id
+                Task.id == dependency.predecessor_task_id
             )
             .first()
         )
@@ -276,102 +287,49 @@ def calculate_task_readiness(
         if predecessor is None:
             continue
 
-        # -------------------------------------
-        # Finish-to-Start
-        # -------------------------------------
+        dependency_type = dependency.dependency_type.upper()
 
-        if dependency.dependency_type == "FS":
+        # Finish-to-Start: predecessor must be completed.
+        if dependency_type == "FS":
+            is_blocked = predecessor.status != "completed"
+            reason = "Predecessor task must be completed."
 
-            if predecessor.status != "completed":
+        # Start-to-Start: predecessor must have started.
+        elif dependency_type == "SS":
+            is_blocked = predecessor.status == "not_started"
+            reason = "Predecessor task must have started."
 
-                blocking_reasons.append(
-                    TaskBlockingReason(
-                        predecessor_task_id=predecessor.id,
-                        predecessor_task_name=predecessor.name,
-                        predecessor_status=predecessor.status,
-                        dependency_type="FS",
-                        reason=(
-                            "Predecessor task "
-                            "must be completed."
-                        ),
-                    )
+        # FF and SF constrain finish timing, not start readiness.
+        elif dependency_type in {"FF", "SF"}:
+            continue
+
+        else:
+            # Fail safely if unsupported dependency data exists.
+            blocking_reasons.append(
+                TaskBlockingReason(
+                    predecessor_task_id=predecessor.id,
+                    predecessor_task_name=predecessor.name,
+                    predecessor_status=predecessor.status,
+                    dependency_type=dependency_type,
+                    reason="Unsupported dependency type.",
                 )
+            )
+            continue
 
-        # -------------------------------------
-        # Start-to-Start
-        # -------------------------------------
-
-        elif dependency.dependency_type == "SS":
-
-            if predecessor.status == "not_started":
-
-                blocking_reasons.append(
-                    TaskBlockingReason(
-                        predecessor_task_id=predecessor.id,
-                        predecessor_task_name=predecessor.name,
-                        predecessor_status=predecessor.status,
-                        dependency_type="SS",
-                        reason=(
-                            "Predecessor task "
-                            "must have started."
-                        ),
-                    )
+        if is_blocked:
+            blocking_reasons.append(
+                TaskBlockingReason(
+                    predecessor_task_id=predecessor.id,
+                    predecessor_task_name=predecessor.name,
+                    predecessor_status=predecessor.status,
+                    dependency_type=dependency_type,
+                    reason=reason,
                 )
+            )
 
-        # -------------------------------------
-        # Finish-to-Finish
-        # -------------------------------------
-
-        elif dependency.dependency_type == "FF":
-
-            if predecessor.status != "completed":
-
-                blocking_reasons.append(
-                    TaskBlockingReason(
-                        predecessor_task_id=predecessor.id,
-                        predecessor_task_name=predecessor.name,
-                        predecessor_status=predecessor.status,
-                        dependency_type="FF",
-                        reason=(
-                            "Predecessor task "
-                            "must be completed."
-                        ),
-                    )
-                )
-
-        # -------------------------------------
-        # Start-to-Finish
-        # -------------------------------------
-
-        elif dependency.dependency_type == "SF":
-
-            if predecessor.status == "not_started":
-
-                blocking_reasons.append(
-                    TaskBlockingReason(
-                        predecessor_task_id=predecessor.id,
-                        predecessor_task_name=predecessor.name,
-                        predecessor_status=predecessor.status,
-                        dependency_type="SF",
-                        reason=(
-                            "Predecessor task "
-                            "must have started."
-                        ),
-                    )
-                )
-
-    # -----------------------------------------
-    # Final readiness
-    # -----------------------------------------
-
-    if blocking_reasons:
-        readiness = "blocked"
-    else:
-        readiness = "ready"
+    readiness = "blocked" if blocking_reasons else "ready"
 
     return readiness, blocking_reasons
-
-
 # =========================================
 # Refresh Task Execution State
 # =========================================
@@ -389,54 +347,103 @@ def refresh_task_execution_state(
 
     return readiness
 
-
 # =========================================
 # Refresh Successor Execution States
+# Recursive Dependency Propagation
 # =========================================
 
 def refresh_successor_execution_states(
     task: Task,
     db: Session,
 ):
-    dependencies = (
-        db.query(TaskDependency)
-        .filter(
-            TaskDependency.predecessor_task_id
-            == task.id
-        )
-        .order_by(TaskDependency.id)
-        .all()
-    )
+    """
+    Recalculate execution readiness through the
+    complete downstream dependency chain.
 
+    Example:
+
+        A -> B -> C -> D
+
+    If A changes, B is refreshed.
+    If B readiness changes, C is refreshed.
+    Then D is refreshed, and so on.
+
+    The function prevents infinite loops by keeping
+    track of already processed task IDs.
+    """
+
+    queue = [task.id]
+    processed_task_ids = set()
     refreshed_task_ids = set()
 
-    for dependency in dependencies:
+    while queue:
 
-        successor = (
-            db.query(Task)
+        current_task_id = queue.pop(0)
+
+        if current_task_id in processed_task_ids:
+            continue
+
+        processed_task_ids.add(current_task_id)
+
+        # -----------------------------------------
+        # Find direct successors
+        # -----------------------------------------
+
+        dependencies = (
+            db.query(TaskDependency)
             .filter(
-                Task.id
-                == dependency.successor_task_id
+                TaskDependency.predecessor_task_id
+                == current_task_id
             )
-            .first()
+            .order_by(TaskDependency.id)
+            .all()
         )
 
-        if successor is None:
-            continue
+        for dependency in dependencies:
 
-        if successor.id in refreshed_task_ids:
-            continue
+            successor = (
+                db.query(Task)
+                .filter(
+                    Task.id
+                    == dependency.successor_task_id
+                )
+                .first()
+            )
 
-        refresh_task_execution_state(
-            successor,
-            db,
-        )
+            if successor is None:
+                continue
 
-        refreshed_task_ids.add(successor.id)
+            # -------------------------------------
+            # Refresh successor readiness
+            # -------------------------------------
+
+            old_state = successor.execution_state
+
+            new_state = refresh_task_execution_state(
+                successor,
+                db,
+            )
+
+            refreshed_task_ids.add(
+                successor.id
+            )
+
+            # -------------------------------------
+            # Continue propagation
+            #
+            # Even if the state did not change,
+            # continue through the chain because
+            # the successor's state is an input to
+            # other logic in future extensions.
+            # -------------------------------------
+
+            if successor.id not in processed_task_ids:
+
+                queue.append(
+                    successor.id
+                )
 
     return refreshed_task_ids
-
-
 # =========================================
 # Root
 # =========================================
@@ -926,6 +933,7 @@ def update_project(
 # Delete a project
 # =========================================
 
+
 @app.delete("/api/projects/{project_id}")
 def delete_project(
     project_id: int,
@@ -946,20 +954,158 @@ def delete_project(
     try:
 
         # -----------------------------------------
-        # Delete all tasks belonging to the project
+        # Find all project tasks
         # -----------------------------------------
 
-        db.query(Task).filter(
-            Task.project_id == project_id
-        ).delete(
-            synchronize_session=False
+        project_tasks = (
+            db.query(Task)
+            .filter(
+                Task.project_id == project_id
+            )
+            .all()
         )
 
+        task_ids = [
+            task.id
+            for task in project_tasks
+        ]
+
+
         # -----------------------------------------
-        # Delete the project
+        # Delete execution report history
+        # -----------------------------------------
+
+        if task_ids:
+
+            report_ids = [
+                report_id
+                for (report_id,) in db.query(
+                    TaskExecutionReport.id
+                ).filter(
+                    TaskExecutionReport.task_id.in_(task_ids)
+                ).all()
+            ]
+
+            if report_ids:
+                db.query(TaskExecutionReportHistory).filter(
+                    TaskExecutionReportHistory.report_id.in_(
+                        report_ids
+                    )
+                ).delete(
+                    synchronize_session=False
+                )
+
+            # -------------------------------------
+            # Delete execution reports
+            # -------------------------------------
+
+            db.query(TaskExecutionReport).filter(
+                TaskExecutionReport.task_id.in_(task_ids)
+            ).delete(
+                synchronize_session=False
+            )
+
+            # -------------------------------------
+            # Delete execution baselines
+            # -------------------------------------
+
+            db.query(TaskExecutionBaseline).filter(
+                TaskExecutionBaseline.task_id.in_(task_ids)
+            ).delete(
+                synchronize_session=False
+            )
+
+
+        # -----------------------------------------
+        # Delete task dependencies
+        # -----------------------------------------
+
+        if task_ids:
+
+            db.query(TaskDependency).filter(
+                (
+                    TaskDependency.predecessor_task_id
+                    .in_(task_ids)
+                )
+                |
+                (
+                    TaskDependency.successor_task_id
+                    .in_(task_ids)
+                )
+            ).delete(
+                synchronize_session=False
+            )
+
+        # -----------------------------------------
+        # Delete quantity history
+        # -----------------------------------------
+
+        if task_ids:
+
+            quantities = (
+                db.query(TaskQuantity)
+                .filter(
+                    TaskQuantity.task_id.in_(task_ids)
+                )
+                .all()
+            )
+
+            quantity_ids = [
+                quantity.id
+                for quantity in quantities
+            ]
+
+            if quantity_ids:
+
+                db.query(TaskQuantityHistory).filter(
+                    TaskQuantityHistory.task_quantity_id.in_(
+                        quantity_ids
+                    )
+                ).delete(
+                    synchronize_session=False
+                )
+
+            # -------------------------------------
+            # Delete quantities
+            # -------------------------------------
+
+            db.query(TaskQuantity).filter(
+                TaskQuantity.task_id.in_(task_ids)
+            ).delete(
+                synchronize_session=False
+            )
+
+            # -------------------------------------
+            # Delete progress history
+            # -------------------------------------
+
+            db.query(TaskProgressHistory).filter(
+                TaskProgressHistory.task_id.in_(task_ids)
+            ).delete(
+                synchronize_session=False
+            )
+
+        # -----------------------------------------
+        # Delete all project tasks
+        # -----------------------------------------
+
+        if task_ids:
+
+            db.query(Task).filter(
+                Task.id.in_(task_ids)
+            ).delete(
+                synchronize_session=False
+            )
+
+        # -----------------------------------------
+        # Delete project
         # -----------------------------------------
 
         db.delete(existing_project)
+
+        # -----------------------------------------
+        # Commit transaction
+        # -----------------------------------------
 
         db.commit()
 
@@ -976,7 +1122,6 @@ def delete_project(
         "message": "Project deleted successfully",
         "id": project_id,
     }
-
 
 # =========================================
 # Tasks
@@ -1063,10 +1208,7 @@ def create_task(
         name=task.name,
         description=task.description,
         status=task.status,
-        execution_state=(
-            task.execution_state
-            or "not_evaluated"
-        ),
+        execution_state="not_evaluated",
         priority=task.priority,
         progress_type=task.progress_type,
         planned_start=task.planned_start,
@@ -1080,6 +1222,14 @@ def create_task(
     )
 
     db.add(new_task)
+    db.flush()
+
+    # Evaluate readiness after the task has an ID.
+    refresh_task_execution_state(
+        new_task,
+        db,
+    )
+
     db.commit()
     db.refresh(new_task)
 
@@ -1190,21 +1340,20 @@ def update_task(
                 current_parent.parent_task_id
             )
 
-    # -----------------------------------------
-    # Determine proposed values
-    # -----------------------------------------
+# -----------------------------------------
+# Determine proposed parent
+# -----------------------------------------
 
-    new_parent_task_id = (
-        task.parent_task_id
-        if task.parent_task_id is not None
-        else existing_task.parent_task_id
-    )
+    if "parent_task_id" in task.model_fields_set:
+        new_parent_task_id = task.parent_task_id
+    else:
+        new_parent_task_id = existing_task.parent_task_id
 
-    new_weight = (
-        float(task.weight)
-        if task.weight is not None
-        else old_weight
-    )
+        new_weight = (
+            float(task.weight)
+            if task.weight is not None
+            else old_weight
+        )
 
     new_include_in_progress = (
         task.include_in_progress
@@ -1297,9 +1446,9 @@ def update_task(
     # Update fields
     # -----------------------------------------
 
-    if task.parent_task_id is not None:
+    if "parent_task_id" in task.model_fields_set:
         existing_task.parent_task_id = (
-            task.parent_task_id
+        task.parent_task_id
         )
 
     if task.code is not None:
@@ -1391,6 +1540,9 @@ def update_task(
     # -----------------------------------------
     # Update execution state
     # -----------------------------------------
+# -----------------------------------------
+# Update execution state
+# -----------------------------------------
 
     readiness, _ = calculate_task_readiness(
         existing_task,
@@ -1399,7 +1551,21 @@ def update_task(
 
     existing_task.execution_state = readiness
 
+    # -----------------------------------------
+    # Propagate readiness to successors
+    # -----------------------------------------
+
+    refresh_successor_execution_states(
+        existing_task,
+        db,
+    )
+
+    # -----------------------------------------
+    # Commit all execution-state changes
+    # -----------------------------------------
+
     db.commit()
+
     db.refresh(existing_task)
 
     return existing_task
@@ -1778,8 +1944,21 @@ def create_task_dependency(
     )
 
     db.add(new_dependency)
-
     try:
+        # Refresh the new successor's readiness.
+        refresh_task_execution_state(
+            successor,
+            db,
+        )
+
+        # Refresh all downstream successors.
+        refresh_successor_execution_states(
+            successor,
+            db,
+        )
+
+        # Save the dependency and readiness changes
+        # together in one transaction.
         db.commit()
 
     except IntegrityError:
@@ -1795,7 +1974,6 @@ def create_task_dependency(
     db.refresh(new_dependency)
 
     return new_dependency
-
 
 # =========================================
 # Get Task Dependencies
@@ -1840,7 +2018,6 @@ def get_task_dependencies(
 
     return dependencies
 
-
 # =========================================
 # Delete Task Dependency
 # =========================================
@@ -1867,6 +2044,10 @@ def delete_task_dependency(
             detail="Task dependency not found.",
         )
 
+    # -----------------------------------------
+    # Keep task IDs before deleting dependency
+    # -----------------------------------------
+
     predecessor_task_id = (
         dependency.predecessor_task_id
     )
@@ -1875,10 +2056,18 @@ def delete_task_dependency(
         dependency.successor_task_id
     )
 
-    db.delete(dependency)
-    db.commit()
+    # -----------------------------------------
+    # Delete dependency
+    # -----------------------------------------
 
-    # Refresh successor readiness after dependency removal
+    db.delete(dependency)
+
+    db.flush()
+
+    # -----------------------------------------
+    # Find successor
+    # -----------------------------------------
+
     successor = (
         db.query(Task)
         .filter(
@@ -1887,23 +2076,44 @@ def delete_task_dependency(
         .first()
     )
 
+    # -----------------------------------------
+    # Refresh successor readiness
+    # -----------------------------------------
+
     if successor is not None:
+
         refresh_task_execution_state(
             successor,
             db,
         )
-        db.commit()
+
+        # -------------------------------------
+        # Propagate through downstream chain
+        # -------------------------------------
+
+        refresh_successor_execution_states(
+            successor,
+            db,
+        )
+
+    # -----------------------------------------
+    # Commit changes
+    # -----------------------------------------
+
+    db.commit()
 
     return {
         "message": (
             "Task dependency deleted successfully."
         ),
         "id": dependency_id,
-        "predecessor_task_id": predecessor_task_id,
-        "successor_task_id": successor_task_id,
+        "predecessor_task_id": (
+            predecessor_task_id
+        ),
+        "successor_task_id": (
+            successor_task_id
+        ),
     }
-
-
 # =========================================
 # Project Overall Progress
 # =========================================
@@ -2065,6 +2275,7 @@ def get_project_wbs(
             code=task.code,
             name=task.name,
             status=task.status,
+            execution_state=task.execution_state,
             priority=task.priority,
             progress_type=task.progress_type,
             progress=round(task_progress, 2),
@@ -2420,4 +2631,397 @@ def get_task_readiness(
         "task_name": task.name,
         "readiness": readiness,
         "blocking_reasons": blocking_reasons,
+    }
+
+
+# =========================================
+# Task Execution Reports API
+# =========================================
+
+def _get_task_quantity(db: Session, task_id: int):
+    """Return the latest quantity record for a task."""
+    return (
+        db.query(TaskQuantity)
+        .filter(TaskQuantity.task_id == task_id)
+        .order_by(TaskQuantity.id.desc())
+        .first()
+    )
+
+
+def _ensure_execution_baseline(db: Session, task_id: int):
+    """
+    Preserve the cumulative actual quantity that existed
+    before periodic execution reporting started.
+    """
+    baseline = (
+        db.query(TaskExecutionBaseline)
+        .filter(TaskExecutionBaseline.task_id == task_id)
+        .first()
+    )
+
+    if baseline is not None:
+        return baseline
+
+    quantity = _get_task_quantity(db, task_id)
+
+    opening_quantity = (
+        float(quantity.actual_quantity or 0)
+        if quantity is not None
+        else 0.0
+    )
+
+    baseline = TaskExecutionBaseline(
+        task_id=task_id,
+        opening_quantity=opening_quantity,
+    )
+
+    db.add(baseline)
+    db.flush()
+
+    return baseline
+
+def _recalculate_execution_quantity(
+    db: Session,
+    task_id: int,
+):
+    """
+    Actual cumulative quantity =
+    opening baseline + all periodic reports.
+    """
+    baseline = _ensure_execution_baseline(db, task_id)
+
+    reports = (
+        db.query(TaskExecutionReport)
+        .filter(TaskExecutionReport.task_id == task_id)
+        .all()
+    )
+
+    cumulative = float(baseline.opening_quantity or 0)
+
+    for report in reports:
+        cumulative += float(report.period_quantity or 0)
+
+    quantity = _get_task_quantity(db, task_id)
+
+    if quantity is not None:
+        quantity.actual_quantity = cumulative
+
+    return cumulative
+
+
+@app.post(
+    "/api/tasks/{task_id}/execution-reports",
+    response_model=TaskExecutionReportResponse,
+    status_code=201,
+)
+def create_task_execution_report(
+    task_id: int,
+    report_data: TaskExecutionReportCreate,
+    db: Session = Depends(get_db),
+):
+    task = (
+        db.query(Task)
+        .filter(Task.id == task_id)
+        .first()
+    )
+
+    if task is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Task not found",
+        )
+
+    if report_data.task_id != task_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Task ID in the URL and request body must match",
+        )
+
+    existing_report = (
+        db.query(TaskExecutionReport)
+        .filter(
+            TaskExecutionReport.task_id == task_id,
+            TaskExecutionReport.report_date == report_data.report_date,
+        )
+        .first()
+    )
+
+    if existing_report is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="An execution report already exists for this task and date",
+        )
+
+    try:
+        # Capture the old cumulative quantity before adding the first report.
+        _ensure_execution_baseline(db, task_id)
+
+        report = TaskExecutionReport(
+            task_id=task_id,
+            report_date=report_data.report_date,
+            period_quantity=report_data.period_quantity,
+            notes=report_data.notes,
+        )
+
+        db.add(report)
+        db.flush()
+
+        _recalculate_execution_quantity(db, task_id)
+
+        db.commit()
+        db.refresh(report)
+
+        return report
+
+    except Exception:
+        db.rollback()
+        raise
+
+
+@app.get(
+    "/api/tasks/{task_id}/execution-reports",
+    response_model=list[TaskExecutionReportResponse],
+)
+def list_task_execution_reports(
+    task_id: int,
+    db: Session = Depends(get_db),
+):
+    task = (
+        db.query(Task)
+        .filter(Task.id == task_id)
+        .first()
+    )
+
+    if task is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Task not found",
+        )
+
+    return (
+        db.query(TaskExecutionReport)
+        .filter(TaskExecutionReport.task_id == task_id)
+        .order_by(
+            TaskExecutionReport.report_date.asc(),
+            TaskExecutionReport.id.asc(),
+        )
+        .all()
+    )
+
+
+@app.put(
+    "/api/execution-reports/{report_id}",
+    response_model=TaskExecutionReportResponse,
+)
+def update_task_execution_report(
+    report_id: int,
+    report_data: TaskExecutionReportUpdate,
+    db: Session = Depends(get_db),
+):
+    report = (
+        db.query(TaskExecutionReport)
+        .filter(TaskExecutionReport.id == report_id)
+        .first()
+    )
+
+    if report is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Execution report not found",
+        )
+
+    reason = report_data.reason.strip()
+
+    if not reason:
+        raise HTTPException(
+            status_code=422,
+            detail="A non-empty correction reason is required",
+        )
+
+    try:
+        previous_quantity = float(report.period_quantity)
+
+        if report_data.period_quantity is not None:
+            new_quantity = report_data.period_quantity
+
+            if new_quantity != previous_quantity:
+                history = TaskExecutionReportHistory(
+                    report_id=report.id,
+                    previous_quantity=previous_quantity,
+                    recorded_quantity=new_quantity,
+                    reason=reason,
+                )
+                db.add(history)
+
+                report.period_quantity = new_quantity
+
+        if report_data.notes is not None:
+            report.notes = report_data.notes
+
+        report.updated_at = datetime.utcnow()
+
+        _recalculate_execution_quantity(db, report.task_id)
+
+        db.commit()
+        db.refresh(report)
+
+        return report
+
+    except Exception:
+        db.rollback()
+        raise
+
+
+@app.get(
+    "/api/execution-reports/{report_id}/history",
+    response_model=list[TaskExecutionReportHistoryResponse],
+)
+def get_task_execution_report_history(
+    report_id: int,
+    db: Session = Depends(get_db),
+):
+    report = (
+        db.query(TaskExecutionReport)
+        .filter(TaskExecutionReport.id == report_id)
+        .first()
+    )
+
+    if report is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Execution report not found",
+        )
+
+    return (
+        db.query(TaskExecutionReportHistory)
+        .filter(
+            TaskExecutionReportHistory.report_id == report_id
+        )
+        .order_by(
+            TaskExecutionReportHistory.changed_at.asc(),
+            TaskExecutionReportHistory.id.asc(),
+        )
+        .all()
+    )
+
+
+@app.get("/api/tasks/{task_id}/execution-summary")
+def get_task_execution_summary(
+    task_id: int,
+    as_of_date: date | None = None,
+    db: Session = Depends(get_db),
+):
+    # -----------------------------------------
+    # Find task
+    # -----------------------------------------
+
+    task = (
+        db.query(Task)
+        .filter(Task.id == task_id)
+        .first()
+    )
+
+    if task is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Task not found",
+        )
+
+    cutoff_date = as_of_date or date.today()
+
+    # -----------------------------------------
+    # Find current quantity record
+    # -----------------------------------------
+
+    quantity = _get_task_quantity(db, task_id)
+
+    # -----------------------------------------
+    # Determine opening quantity
+    # -----------------------------------------
+
+    baseline = (
+        db.query(TaskExecutionBaseline)
+        .filter(
+            TaskExecutionBaseline.task_id == task_id
+        )
+        .first()
+    )
+
+    if baseline is not None:
+        opening_quantity = float(
+            baseline.opening_quantity or 0
+        )
+    else:
+        # Preserve existing cumulative actual quantity
+        # until periodic reporting starts for this task.
+        opening_quantity = (
+            float(quantity.actual_quantity or 0)
+            if quantity is not None
+            else 0.0
+        )
+
+    # -----------------------------------------
+    # Get reports up to the selected date
+    # -----------------------------------------
+
+    reports = (
+        db.query(TaskExecutionReport)
+        .filter(
+            TaskExecutionReport.task_id == task_id,
+            TaskExecutionReport.report_date <= cutoff_date,
+        )
+        .order_by(
+            TaskExecutionReport.report_date.asc(),
+            TaskExecutionReport.id.asc(),
+        )
+        .all()
+    )
+
+    # -----------------------------------------
+    # Calculate cumulative quantity
+    # -----------------------------------------
+
+    period_total = sum(
+        float(report.period_quantity or 0)
+        for report in reports
+    )
+
+    cumulative_quantity = (
+        opening_quantity + period_total
+    )
+
+    # -----------------------------------------
+    # Calculate quantity progress
+    # -----------------------------------------
+
+    planned_quantity = (
+        float(quantity.planned_quantity or 0)
+        if quantity is not None
+        else 0.0
+    )
+
+    progress = (
+        min(
+            cumulative_quantity / planned_quantity * 100,
+            100.0,
+        )
+        if planned_quantity > 0
+        else 0.0
+    )
+
+    # -----------------------------------------
+    # Return execution summary
+    # -----------------------------------------
+
+    return {
+        "task_id": task_id,
+        "as_of_date": cutoff_date,
+        "opening_quantity": round(opening_quantity, 3),
+        "period_quantity_total": round(period_total, 3),
+        "cumulative_quantity": round(cumulative_quantity, 3),
+        "planned_quantity": round(planned_quantity, 3),
+        "unit": quantity.unit if quantity is not None else None,
+        "quantity_progress": round(progress, 2),
+        "report_count": len(reports),
+        "reports": reports,
     }

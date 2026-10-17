@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useLanguage } from "../context/LanguageContext";
+import TaskExecutionReports from "./TaskExecutionReports";
 import "./ProjectDetails.css";
 
 function getTranslation(t, key, fallback) {
@@ -358,6 +359,14 @@ function TaskDetails({
         </div>
 
       </div>
+          {task.progress_type === "quantity" && (
+      <div className="task-details-section">
+        <TaskExecutionReports
+          taskId={task.id}
+          t={t}
+        />
+        </div>
+      )}
 
     </div>
   );

@@ -331,11 +331,10 @@ class TaskProgressHistory(Base):
 # Task Dependency
 # =========================================
 #
-# Kept in the database for future use.
-# It is intentionally NOT part of the current
-# execution logic.
+# Stores task-to-task dependencies used by the
+# execution readiness and dependency management
+# logic in main.py.
 #
-
 class TaskDependency(Base):
     __tablename__ = "task_dependencies"
 
@@ -466,4 +465,153 @@ class TaskQuantityHistory(Base):
         DateTime,
         nullable=False,
         default=datetime.utcnow,
+    )
+
+    # =========================================
+# Task Execution Report
+# =========================================
+
+class TaskExecutionReport(Base):
+    __tablename__ = "task_execution_reports"
+
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True,
+    )
+
+    task_id = Column(
+        Integer,
+        ForeignKey("tasks.id"),
+        nullable=False,
+        index=True,
+    )
+
+    # Date of the execution report
+    report_date = Column(
+        Date,
+        nullable=False,
+        index=True,
+    )
+
+    # Quantity executed during this reporting period
+    period_quantity = Column(
+        Numeric(18, 3),
+        nullable=False,
+        default=0,
+    )
+
+    notes = Column(
+        Text,
+        nullable=True,
+    )
+
+    created_at = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.utcnow,
+    )
+
+    updated_at = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "task_id",
+            "report_date",
+            name="uq_task_execution_report_date",
+        ),
+        CheckConstraint(
+            "period_quantity >= 0",
+            name="ck_execution_report_quantity_nonnegative",
+        ),
+    )
+
+
+# =========================================
+# Task Execution Report History
+# =========================================
+
+class TaskExecutionReportHistory(Base):
+    __tablename__ = "task_execution_report_history"
+
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True,
+    )
+
+    report_id = Column(
+        Integer,
+        ForeignKey("task_execution_reports.id"),
+        nullable=False,
+        index=True,
+    )
+
+    previous_quantity = Column(
+        Numeric(18, 3),
+        nullable=False,
+    )
+
+    recorded_quantity = Column(
+        Numeric(18, 3),
+        nullable=False,
+    )
+
+    reason = Column(
+        Text,
+        nullable=False,
+    )
+
+    changed_at = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.utcnow,
+    )
+
+
+# =========================================
+# Task Execution Baseline
+# Preserves cumulative quantity recorded
+# before periodic reporting was introduced.
+# =========================================
+
+class TaskExecutionBaseline(Base):
+    __tablename__ = "task_execution_baselines"
+
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True,
+    )
+
+    task_id = Column(
+        Integer,
+        ForeignKey("tasks.id"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+
+    opening_quantity = Column(
+        Numeric(18, 3),
+        nullable=False,
+        default=0,
+    )
+
+    created_at = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.utcnow,
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "opening_quantity >= 0",
+            name="ck_execution_baseline_nonnegative",
+        ),
     )

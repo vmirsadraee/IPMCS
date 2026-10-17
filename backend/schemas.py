@@ -401,31 +401,6 @@ class ProjectSetupCreate(BaseModel):
     project: ProjectCreate
     main_operations: list[ProjectSetupTask]
 
-# =========================================
-# Task Dependencies
-# =========================================
-
-class TaskDependencyCreate(BaseModel):
-    predecessor_task_id: int
-    successor_task_id: int
-
-    dependency_type: str = "FS"
-
-    lag_days: int = 0
-
-
-class TaskDependencyResponse(BaseModel):
-    id: int
-
-    predecessor_task_id: int
-    successor_task_id: int
-
-    dependency_type: str
-    lag_days: int
-
-    class Config:
-        from_attributes = True
-
 
 # =========================================
 # Task Execution Readiness
@@ -446,3 +421,45 @@ class TaskReadinessResponse(BaseModel):
     readiness: str
 
     blocking_reasons: list[TaskBlockingReason]
+
+
+# =========================================
+# Task Execution Reports
+# =========================================
+
+class TaskExecutionReportCreate(BaseModel):
+    task_id: int
+    report_date: date
+    period_quantity: float = Field(default=0, ge=0)
+    notes: str | None = None
+
+
+class TaskExecutionReportUpdate(BaseModel):
+    period_quantity: float | None = Field(default=None, ge=0)
+    notes: str | None = None
+    reason: str = Field(min_length=1)
+
+
+class TaskExecutionReportResponse(BaseModel):
+    id: int
+    task_id: int
+    report_date: date
+    period_quantity: float
+    notes: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class TaskExecutionReportHistoryResponse(BaseModel):
+    id: int
+    report_id: int
+    previous_quantity: float
+    recorded_quantity: float
+    reason: str
+    changed_at: datetime
+
+    class Config:
+        from_attributes = True
