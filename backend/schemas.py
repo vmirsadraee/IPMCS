@@ -405,14 +405,19 @@ class ProjectSetupCreate(BaseModel):
 # =========================================
 # Task Execution Readiness
 # =========================================
-
 class TaskBlockingReason(BaseModel):
-    predecessor_task_id: int
-    predecessor_task_name: str
-    predecessor_status: str
-    dependency_type: str
-    reason: str
+    source: str = "dependency"
 
+    predecessor_task_id: int | None = None
+    predecessor_task_name: str | None = None
+    predecessor_status: str | None = None
+    dependency_type: str | None = None
+
+    constraint_id: int | None = None
+    constraint_type: str | None = None
+    constraint_status: str | None = None
+
+    reason: str
 
 class TaskReadinessResponse(BaseModel):
     task_id: int
@@ -422,7 +427,33 @@ class TaskReadinessResponse(BaseModel):
 
     blocking_reasons: list[TaskBlockingReason]
 
+class TaskExecutionConstraintCreate(BaseModel):
+    constraint_type: str = "other"
+    description: str = Field(min_length=1, max_length=5000)
 
+
+class TaskExecutionConstraintUpdate(BaseModel):
+    constraint_type: str | None = None
+    description: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=5000,
+    )
+    status: str | None = None
+
+
+class TaskExecutionConstraintResponse(BaseModel):
+    id: int
+    task_id: int
+    constraint_type: str
+    description: str
+    status: str
+    created_at: datetime
+    updated_at: datetime
+    resolved_at: datetime | None = None
+
+    class Config:
+        from_attributes = True
 # =========================================
 # Task Execution Reports
 # =========================================

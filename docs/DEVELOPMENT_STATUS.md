@@ -81,3 +81,41 @@ At the end of each meaningful session, update this file with:
 - tests run and their results;
 - commit hash if committed;
 - the single next task.
+
+## Execution Constraints Milestone
+
+### Completed
+- Added the `TaskExecutionConstraint` SQLAlchemy model and its database
+  table definition.
+- Added create, update, and response schemas for execution constraints.
+- Added APIs to create, list, resolve, and reopen task execution constraints.
+- Supported constraint categories: materials, equipment, manpower, permit,
+  documents, access, safety, and other.
+- Integrated open execution constraints into the existing task-readiness
+  engine. An open constraint blocks the task; resolving all open constraints
+  removes those constraint-based blocking reasons.
+- Kept the existing dependency/readiness engine; no duplicate engine added.
+
+### Validation
+- Python compilation passed for `models.py`, `schemas.py`, and `main.py`.
+- Model import and table-name check passed.
+- Isolated readiness tests passed for multiple constraints, resolving
+  constraints, and reopening a constraint.
+- Direct API-function tests passed for create, list, resolve, and readiness.
+- Frontend production build passed.
+- FastAPI TestClient was not used because the environment lacks the required
+  `httpx2` package. Direct API-function tests were used instead.
+
+### Files
+- `backend/models.py`
+- `backend/schemas.py`
+- `backend/main.py`
+- `docs/DEVELOPMENT_STATUS.md`
+
+### Next Task
+Integrate execution-constraint management into the Project Details/WBS UI,
+including viewing, adding, resolving, and reopening constraints.
+
+### Git
+- Commit and push this milestone after reviewing the staged file list.
+- Keep `backend/backups/` and `backend/main.py.save` out of the commit.

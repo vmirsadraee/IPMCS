@@ -15,6 +15,7 @@ from models import (
     TaskExecutionReport,
     TaskExecutionReportHistory,
     TaskExecutionBaseline,
+    TaskExecutionConstraint,
 )
 
 from schemas import (
@@ -45,6 +46,9 @@ from schemas import (
     TaskExecutionReportUpdate,
     TaskExecutionReportResponse,
     TaskExecutionReportHistoryResponse,
+    TaskExecutionConstraintCreate,
+    TaskExecutionConstraintUpdate,
+    TaskExecutionConstraintResponse,
 )
 
 
@@ -326,7 +330,33 @@ def calculate_task_readiness(
                     reason=reason,
                 )
             )
+        # -----------------------------------------
+    # Open execution constraints
+    # -----------------------------------------
 
+    open_constraints = (
+        db.query(TaskExecutionConstraint)
+        .filter(
+            TaskExecutionConstraint.task_id == task.id,
+            TaskExecutionConstraint.status == "open",
+        )
+        .order_by(TaskExecutionConstraint.id)
+        .all()
+    )
+
+    for constraint in open_constraints:
+        blocking_reasons.append(
+            TaskBlockingReason(
+                source="execution_constraint",
+                constraint_id=constraint.id,
+                constraint_type=constraint.constraint_type,
+                constraint_status=constraint.status,
+                reason=(
+                    f"Open execution constraint: "
+                    f"{constraint.description}"
+                ),
+            )
+        )
     readiness = "blocked" if blocking_reasons else "ready"
 
     return readiness, blocking_reasons
@@ -442,6 +472,34 @@ def refresh_successor_execution_states(
                 queue.append(
                     successor.id
                 )
+
+            # -----------------------------------------
+        # Open execution constraints
+        # -----------------------------------------
+
+        open_constraints = (
+            db.query(TaskExecutionConstraint)
+            .filter(
+                TaskExecutionConstraint.task_id == task.id,
+                TaskExecutionConstraint.status == "open",
+            )
+            .order_by(TaskExecutionConstraint.id)
+            .all()
+        )
+
+        for constraint in open_constraints:
+            blocking_reasons.append(
+                TaskBlockingReason(
+                    source="execution_constraint",
+                    constraint_id=constraint.id,
+                    constraint_type=constraint.constraint_type,
+                    constraint_status=constraint.status,
+                    reason=(
+                        f"Open execution constraint: "
+                        f"{constraint.description}"
+                    ),
+                )
+            )        
 
     return refreshed_task_ids
 # =========================================
@@ -2633,7 +2691,191 @@ def get_task_readiness(
         "blocking_reasons": blocking_reasons,
     }
 
+# =========================================
+# Task Execution Constraints API
+# =========================================
 
+ALLOWED_CONSTRAINT_TYPES = {
+    "materials",
+    "equipment",
+    "manpower",
+    "permit",
+    "documents",
+    "access",
+    "safety",
+    "other",
+}
+
+
+@app.post(
+    "/api/tasks/{task_id}/execution-constraints",
+    response_model=TaskExecutionConstraintResponse,
+    status_code=201,
+)
+def create_task_execution_constraint(
+    task_id: int,
+    payload: TaskExecutionConstraintCreate,
+    db: Session = Depends(get_db),
+):
+    task = db.query(Task).filter(Task.id == task_id).first()
+
+    if task is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Task not found.",
+        )
+
+    constraint_type = payload.constraint_type.strip().lower()
+    description = payload.description.strip()
+
+    if constraint_type not in ALLOWED_CONSTRAINT_TYPES:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Unsupported constraint_type. Allowed values: "
+                + ", ".join(sorted(ALLOWED_CONSTRAINT_TYPES))
+            ),
+        )
+
+    if not description:
+        raise HTTPException(
+            status_code=422,
+            detail="Constraint description cannot be empty.",
+        )
+
+    constraint = TaskExecutionConstraint(
+        task_id=task_id,
+        constraint_type=constraint_type,
+        description=description,
+        status="open",
+    )
+
+    db.add(constraint)
+    db.flush()
+
+    refresh_task_execution_state(task, db)
+
+    db.commit()
+    db.refresh(constraint)
+
+    return constraint
+
+
+@app.get(
+    "/api/tasks/{task_id}/execution-constraints",
+    response_model=list[TaskExecutionConstraintResponse],
+)
+def list_task_execution_constraints(
+    task_id: int,
+    db: Session = Depends(get_db),
+):
+    task = db.query(Task).filter(Task.id == task_id).first()
+
+    if task is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Task not found.",
+        )
+
+    return (
+        db.query(TaskExecutionConstraint)
+        .filter(TaskExecutionConstraint.task_id == task_id)
+        .order_by(TaskExecutionConstraint.id)
+        .all()
+    )
+
+
+@app.put(
+    "/api/execution-constraints/{constraint_id}",
+    response_model=TaskExecutionConstraintResponse,
+)
+def update_task_execution_constraint(
+    constraint_id: int,
+    payload: TaskExecutionConstraintUpdate,
+    db: Session = Depends(get_db),
+):
+    constraint = (
+        db.query(TaskExecutionConstraint)
+        .filter(TaskExecutionConstraint.id == constraint_id)
+        .first()
+    )
+
+    if constraint is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Execution constraint not found.",
+        )
+
+    task = db.query(Task).filter(
+        Task.id == constraint.task_id
+    ).first()
+
+    if task is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Task not found.",
+        )
+
+    changes = payload.model_dump(exclude_unset=True)
+
+    if "constraint_type" in changes:
+        new_type = changes["constraint_type"]
+
+        if new_type is None:
+            raise HTTPException(
+                status_code=422,
+                detail="Constraint type cannot be null.",
+            )
+
+        new_type = new_type.strip().lower()
+
+        if new_type not in ALLOWED_CONSTRAINT_TYPES:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Unsupported constraint_type. Allowed values: "
+                    + ", ".join(sorted(ALLOWED_CONSTRAINT_TYPES))
+                ),
+            )
+
+        constraint.constraint_type = new_type
+
+    if "description" in changes:
+        new_description = changes["description"]
+
+        if new_description is None or not new_description.strip():
+            raise HTTPException(
+                status_code=422,
+                detail="Constraint description cannot be empty.",
+            )
+
+        constraint.description = new_description.strip()
+
+    if "status" in changes:
+        new_status = changes["status"]
+
+        if new_status not in {"open", "resolved"}:
+            raise HTTPException(
+                status_code=422,
+                detail="Status must be 'open' or 'resolved'.",
+            )
+
+        constraint.status = new_status
+
+        if new_status == "resolved":
+            if constraint.resolved_at is None:
+                constraint.resolved_at = datetime.utcnow()
+        else:
+            constraint.resolved_at = None
+
+    constraint.updated_at = datetime.utcnow()
+
+    refresh_task_execution_state(task, db)
+
+    db.commit()
+    db.refresh(constraint)
+
+    return constraint
 # =========================================
 # Task Execution Reports API
 # =========================================

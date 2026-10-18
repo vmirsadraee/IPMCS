@@ -336,6 +336,7 @@ class TaskProgressHistory(Base):
 # logic in main.py.
 #
 class TaskDependency(Base):
+
     __tablename__ = "task_dependencies"
 
     id = Column(
@@ -378,6 +379,71 @@ class TaskDependency(Base):
         ),
     )
 
+# =========================================
+# Task Execution Constraints
+# =========================================
+
+class TaskExecutionConstraint(Base):
+    __tablename__ = "task_execution_constraints"
+
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True,
+    )
+
+    task_id = Column(
+        Integer,
+        ForeignKey("tasks.id"),
+        nullable=False,
+        index=True,
+    )
+
+    constraint_type = Column(
+        String(50),
+        nullable=False,
+        default="other",
+    )
+
+    description = Column(
+        Text,
+        nullable=False,
+    )
+
+    status = Column(
+        String(20),
+        nullable=False,
+        default="open",
+    )
+
+    created_at = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.utcnow,
+    )
+
+    updated_at = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+    )
+
+    resolved_at = Column(
+        DateTime,
+        nullable=True,
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('open', 'resolved')",
+            name="ck_task_execution_constraint_status",
+        ),
+        CheckConstraint(
+            "length(trim(description)) > 0",
+            name="ck_task_execution_constraint_description",
+        ),
+    )
 
 # =========================================
 # Task Quantity
